@@ -84,7 +84,33 @@ class TodoManager:
     # --------------------------------------------------------
     def update(self, items: list) -> str:
         # [YOUR CODE HERE]
-        pass
+        STATUS_PENDING = "pending"
+        STATUS_IN_PROGRESS = "in_progress"
+        STATUS_COMPLETED = "completed"
+        VALID_STATUS = [STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_COMPLETED]
+
+        if len(items) > 20:
+            raise ValueError(f"Max 20 todos, you have {len(items)} now")
+
+        in_progress_cnt = 0
+        for item in items:
+            id = item.get("id")
+            text = item.get("text")
+            status = item.get("status")
+            
+            if len(text) == "":
+                raise ValueError(f"Item in TODO should have non-empty text, now {id=} have a empty one")
+            
+            if status not in VALID_STATUS:
+                raise ValueError(f"status must be one of the three valid values: {VALID_STATUS=}, {id=}'s status is {status}")
+            
+            if status == STATUS_IN_PROGRESS:
+                in_progress_cnt += 1
+                if in_progress_cnt > 1:
+                    raise ValueError(f"At most  ONE item can be in_progress at a time, you have {in_progress_cnt}")
+
+        self.items = items
+        return self.render()
 
     # --------------------------------------------------------
     # render() — format the todo list as a readable string
