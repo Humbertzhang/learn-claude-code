@@ -123,6 +123,49 @@ class TestAgentLoop(unittest.TestCase):
         )
         self.assertTrue(found, "tool_result must be appended after tool execution")
 
+    def test_create_and_remove_file(self):
+        """End-to-end: LLM creates hello.py via bash, then removes it."""
+        import os, tempfile, shutil
+        tmpdir = tempfile.mkdtemp()
+        original_cwd = os.getcwd()
+        os.chdir(tmpdir)
+        try:
+            messages = [{"role": "user", "content": "Create hello.py then remove it"}]
+            responses = [
+                # Step 1: LLM calls bash to create the file
+                make_tool_response("echo 'print(\"Hello, World!\")' > hello.py", "t1"),
+                # Step 2: LLM calls bash to verify file content
+                make_tool_response("cat hello.py", "t2"),
+                # Step 3: LLM calls bash to remove the file
+                make_tool_response("rm hello.py", "t3"),
+                # Step 4: LLM responds with final text
+                make_stop_response("Done!"),
+            ]
+            idx = 0
+            def fake_create(**_kw):
+                nonlocal idx
+                r = responses[idx]; idx += 1; return r
+
+            with patch.object(my_agent.client.messages, "create",
+                              side_effect=fake_create):
+                my_agent.agent_loop(messages)
+
+            # Verify: file was created and then removed
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "hello.py")),
+                             "hello.py should have been removed")
+            # Verify: all 4 LLM calls happened
+            self.assertEqual(idx, 4, "Expected 4 LLM round-trips")
+            # Verify: 3 tool_result messages exist
+            tool_results = [
+                m for m in messages
+                if m["role"] == "user" and isinstance(m["content"], list)
+            ]
+            self.assertEqual(len(tool_results), 3,
+                             "Should have 3 tool_result messages (create, cat, rm)")
+        finally:
+            os.chdir(original_cwd)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     runner = unittest.TextTestRunner(verbosity=2)
