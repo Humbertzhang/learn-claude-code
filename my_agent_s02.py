@@ -61,7 +61,14 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, d
 # ============================================================
 def safe_path(p: str) -> Path:
     # [YOUR CODE HERE]
-    pass
+    if not p.startswith("/"):
+        p = WORKDIR / p
+    given_path = Path(p).resolve()
+
+    if given_path.is_relative_to(WORKDIR.resolve()):
+        return given_path
+    else:
+        raise ValueError(f"Given path({given_path}) not in workspace{WORKDIR}")
 
 
 # ============================================================
@@ -86,15 +93,33 @@ def run_bash(command: str) -> str:
 # Your task: read the file at `path` (use safe_path!),
 #   return its text content.
 #
-# Questions to guide you:
-#   - What optional parameter `limit` controls?
-#   - If the file has more lines than limit, what should you append
-#     so the LLM knows it was truncated?
-#   - What should you return if the file doesn't exist?
+# Hints:
+#   - `limit` controls the number of LINES (not characters) to return.
+#     Flow: path.read_text() → splitlines() → slice → "\n".join()
+#   - If the file has more lines than limit, append ONE extra line:
+#       f"... ({remaining_count} more lines)"
+#     so the LLM knows the output was truncated.
+#   - Cap the final string at 50000 characters (same as run_bash).
+#   - On any exception (file not found, permission denied, ...):
+#       return f"Error: {e}"
 # ============================================================
 def run_read(path: str, limit: int = None) -> str:
     # [YOUR CODE HERE]
-    pass
+    safed_path = safe_path(path)
+    try:
+        splited_r = safed_path.read_text(encoding="utf-8").splitlines()
+        # should check limit exits here!
+        if limit and len(splited_r) > limit:
+            remaining_count = len(splited_r) - limit
+            splited_r = splited_r[:limit]
+            splited_r.append(f"... ({remaining_count} more lines)")
+        result = "\n".join(splited_r)
+        if len(result) > 50000:
+            return result[:50000]
+        else:
+            return result
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ============================================================
@@ -103,14 +128,25 @@ def run_read(path: str, limit: int = None) -> str:
 # Your task: write `content` to the file at `path` (use safe_path!).
 #   Return a confirmation string on success.
 #
-# Questions to guide you:
-#   - What if the parent directory doesn't exist yet?
-#   - What's the safest way to create all missing parent dirs?
-#   - What useful info can you include in the success message?
+# Hints:
+#   - To create all missing parent directories in one call, use:
+#       fp.parent.mkdir(parents=True, exist_ok=True)
+#     `parents=True`  → creates any missing intermediate dirs
+#     `exist_ok=True` → won't raise if the dir already exists
+#   - After mkdir, write the content with: fp.write_text(content)
+#   - A useful success message might include the byte count and path,
+#     e.g. f"Wrote {len(content)} bytes to {path}"
+#   - On any exception: return f"Error: {e}"
 # ============================================================
 def run_write(path: str, content: str) -> str:
     # [YOUR CODE HERE]
-    pass
+    try:
+        safed_path = safe_path(path)
+        safed_path.parent.mkdir(parents=True, exist_ok=True)
+        safed_path.write_text(data=content, encoding="utf-8")
+        return f"Wrote {len(content)} bytes to {path}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ============================================================
@@ -119,15 +155,33 @@ def run_write(path: str, content: str) -> str:
 # Your task: in the file at `path`, replace the FIRST occurrence
 #   of `old_text` with `new_text`. Return a confirmation string.
 #
-# Questions to guide you:
-#   - What should you return if old_text isn't found in the file?
-#     (This is the most common mistake in LLM edit loops.)
-#   - str.replace() replaces all occurrences by default —
-#     how do you limit it to just the first one?
+# Hints:
+#   - Read the file first with: content = fp.read_text()
+#   - If old_text is NOT in content, return:
+#       f"Error: Text not found in {path}"
+#     (LLM edit loops often send stale old_text; the explicit error
+#      is a correction signal back to the model.)
+#   - str.replace(old, new) replaces ALL occurrences by default.
+#     Pass a third argument to limit it to just the first one.
+#   - Write the result back and return a confirmation, e.g. f"Edited {path}"
+#   - On any exception: return f"Error: {e}"
 # ============================================================
 def run_edit(path: str, old_text: str, new_text: str) -> str:
     # [YOUR CODE HERE]
-    pass
+    try:
+        safed_path = safe_path(path)
+
+        old_content = safed_path.read_text()
+        if old_text not in old_content:
+            return f"Error: Text not found in {path}"
+        if old_text == new_text:
+            return f"Error: old_text is identical with new_text"
+
+        new_content = old_content.replace(old_text, new_text, 1)
+        safed_path.write_text(data=new_content, encoding="utf-8")
+        return f"Edited {path}"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ============================================================
@@ -142,8 +196,12 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 # Hint: look at the tool schemas in TOOLS below — the "required"
 #   fields tell you exactly what kwargs each handler receives.
 # ============================================================
+# [YOUR CODE HERE]
 TOOL_HANDLERS = {
-    # [YOUR CODE HERE]
+    "bash":       lambda **kw: run_bash(kw["command"]),
+    "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
+    "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
 }
 
 
@@ -168,8 +226,35 @@ TOOLS = [
         },
     },
     # [YOUR CODE HERE] — read_file schema
+    {
+        "name": "read_file",
+        "description": "Read file content by the path param, if needed, limit line of content by limit param.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["path"],
+        },
+    },
     # [YOUR CODE HERE] — write_file schema
+    {
+        "name": "write_file",
+        "description": "Write content into path file",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+    },
     # [YOUR CODE HERE] — edit_file schema
+    {
+        "name": "edit_file",
+        "description": "Edit old_text in path file content with new_text. It only replace the first old_text occurrence.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
+            "required": ["path", "old_text", "new_text"],
+        },
+    }
 ]
 
 
@@ -201,7 +286,15 @@ def agent_loop(messages: list):
                 # If the tool name is unknown, return an error string.
                 # Print the result (first 200 chars) for visibility.
                 # Append to results with type "tool_result".
-                pass
+                print(f"\033[33m$ {block.name}: {str(block.input)[:120]}\033[0m")
+                tool = TOOL_HANDLERS.get(block.name)
+                if tool:
+                    output = tool(**block.input)
+                    print(output[:200])
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+                else:
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": f"Unknown tool: {block.name}"})
+
         messages.append({"role": "user", "content": results})
 
 

@@ -113,6 +113,10 @@ class TestRunRead(unittest.TestCase):
                              "limit=5 should return at most 6 lines (5 + truncation notice)")
         self.assertNotIn("line99", out,
                          "Lines beyond limit should not appear")
+        # The truncation notice must contain the correct remaining count (95, not 0)
+        last_line = lines[-1]
+        self.assertIn("95", last_line,
+                      "Truncation notice must show the correct remaining line count (100-5=95)")
 
     def test_limit_none_returns_all(self):
         self._write("small.txt", "a\nb\nc")
@@ -143,6 +147,13 @@ class TestRunWrite(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertNotIn("Error", result,
                          "Successful write should not return an error string")
+
+    def test_returns_confirmation_for_empty_content(self):
+        result = m.run_write("empty.txt", "")
+        self.assertIsInstance(result, str,
+                              "write_file should return a string even for empty content")
+        self.assertNotIn("Error", result,
+                         "Writing empty content is valid and should not produce an error")
 
     def test_creates_parent_dirs(self):
         m.run_write("nested/deep/file.txt", "data")
@@ -178,7 +189,10 @@ class TestRunEdit(unittest.TestCase):
 
     def test_replaces_only_first_occurrence(self):
         f = self._write("f.txt", "aaa aaa aaa")
-        m.run_edit(f, "aaa", "bbb")
+        
+        edit_result = m.run_edit(f, "aaa", "bbb")
+        print(f"test_replaces_only_first_occurrence: {edit_result=}")
+
         result = (Path(self.tmpdir) / f).read_text()
         self.assertEqual(result, "bbb aaa aaa",
                          "run_edit should replace only the FIRST occurrence")
@@ -221,6 +235,25 @@ class TestDispatchMap(unittest.TestCase):
             self.assertIn("name", tool)
             self.assertIn("description", tool)
             self.assertIn("input_schema", tool)
+
+    def test_write_and_edit_schemas_require_path(self):
+        """write_file and edit_file must list 'path' in required, not 'command'."""
+        for tool in m.TOOLS:
+            if tool["name"] in ("write_file", "edit_file"):
+                required = tool["input_schema"].get("required", [])
+                self.assertIn("path", required,
+                              f"{tool['name']} schema must list 'path' in required")
+                self.assertNotIn("command", required,
+                                 f"{tool['name']} schema must NOT list 'command' in required")
+
+    def test_read_file_limit_type_is_integer(self):
+        """JSON Schema integer type must be 'integer', not Python's 'int'."""
+        for tool in m.TOOLS:
+            if tool["name"] == "read_file":
+                props = tool["input_schema"].get("properties", {})
+                if "limit" in props:
+                    self.assertEqual(props["limit"]["type"], "integer",
+                                     "JSON Schema type for limit must be 'integer', not 'int'")
 
 
 # ── F. agent_loop uses dispatch ───────────────────────────────────────────────
