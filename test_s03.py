@@ -9,10 +9,14 @@ Test groups:
   B. TodoManager.render()  - display format
   C. TOOL_HANDLERS + TOOLS - todo registered in dispatch and schema
   D. agent_loop            - nag counter, try/except, reminder injection
+  E. Integration           - agent creates a Python package via tool calls
 """
 
 import sys
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 try:
@@ -272,12 +276,116 @@ class TestAgentLoopNag(unittest.TestCase):
                            "Error from TodoManager must be wrapped in a tool_result")
 
 
+# ── E. Integration: agent creates a Python package ────────────────────────────
+class TestIntegrationPkgCreation(unittest.TestCase):
+    """
+    Simulate the agent receiving the prompt:
+      "Create a Python package with __init__.py, utils.py, and
+       tests/test_utils.py in ./pkg_test folder."
+
+    The LLM is mocked to emit a fixed sequence of tool calls.
+    We verify the files actually land on disk (in a temp dir).
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.tmp_path = Path(self.tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_write_response(self, path, content, tool_id):
+        return make_tool_response("write_file", {"path": path, "content": content}, tool_id)
+
+    def _make_todo_plan(self, tool_id="t0"):
+        items = [
+            {"id": "1", "text": "Create pkg_test/__init__.py", "status": "pending"},
+            {"id": "2", "text": "Create pkg_test/utils.py", "status": "pending"},
+            {"id": "3", "text": "Create pkg_test/tests/__init__.py", "status": "pending"},
+            {"id": "4", "text": "Create pkg_test/tests/test_utils.py", "status": "pending"},
+        ]
+        return make_tool_response("todo", {"items": items}, tool_id)
+
+    def _make_todo_done(self, tool_id="t9"):
+        items = [
+            {"id": "1", "text": "Create pkg_test/__init__.py", "status": "completed"},
+            {"id": "2", "text": "Create pkg_test/utils.py", "status": "completed"},
+            {"id": "3", "text": "Create pkg_test/tests/__init__.py", "status": "completed"},
+            {"id": "4", "text": "Create pkg_test/tests/test_utils.py", "status": "completed"},
+        ]
+        return make_tool_response("todo", {"items": items}, tool_id)
+
+    def test_agent_creates_pkg_structure(self):
+        """Agent writes all 4 package files to disk via write_file tool calls."""
+        responses = [
+            self._make_todo_plan("t0"),
+            self._make_write_response("pkg_test/__init__.py", '"""pkg_test package."""\n', "t1"),
+            self._make_write_response("pkg_test/utils.py",
+                                      'def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b\n', "t2"),
+            self._make_write_response("pkg_test/tests/__init__.py", "", "t3"),
+            self._make_write_response("pkg_test/tests/test_utils.py",
+                                      'from pkg_test.utils import add, multiply\n\ndef test_add():\n    assert add(1, 2) == 3\n', "t4"),
+            self._make_todo_done("t5"),
+            make_stop_response("Package created successfully."),
+        ]
+        idx = 0
+        def fake(**_kw):
+            nonlocal idx; r = responses[idx]; idx += 1; return r
+
+        messages = [{"role": "user", "content":
+                     "Create a Python package with __init__.py, utils.py, and "
+                     "tests/test_utils.py in ./pkg_test folder."}]
+
+        # Patch WORKDIR so files land in our temp dir, not the real workspace
+        with patch.object(m, "WORKDIR", self.tmp_path), \
+             patch.object(m.client.messages, "create", side_effect=fake):
+            m.agent_loop(messages)
+
+        # Verify all 4 files were created
+        expected_files = [
+            self.tmp_path / "pkg_test" / "__init__.py",
+            self.tmp_path / "pkg_test" / "utils.py",
+            self.tmp_path / "pkg_test" / "tests" / "__init__.py",
+            self.tmp_path / "pkg_test" / "tests" / "test_utils.py",
+        ]
+        for fp in expected_files:
+            self.assertTrue(fp.exists(), f"Expected file not created: {fp.relative_to(self.tmp_path)}")
+
+    def test_todo_contains_all_completed(self):
+        """After the mocked run, all todo items should be completed."""
+        responses = [
+            self._make_todo_plan("t0"),
+            self._make_write_response("pkg_test/__init__.py", "", "t1"),
+            self._make_write_response("pkg_test/utils.py", "", "t2"),
+            self._make_write_response("pkg_test/tests/__init__.py", "", "t3"),
+            self._make_write_response("pkg_test/tests/test_utils.py", "", "t4"),
+            self._make_todo_done("t5"),
+            make_stop_response("Done."),
+        ]
+        idx = 0
+        def fake(**_kw):
+            nonlocal idx; r = responses[idx]; idx += 1; return r
+
+        messages = [{"role": "user", "content": "create pkg"}]
+        fresh_manager = m.TodoManager()
+
+        with patch.object(m, "WORKDIR", self.tmp_path), \
+             patch.object(m, "TODO", fresh_manager), \
+             patch.object(m.client.messages, "create", side_effect=fake):
+            m.agent_loop(messages)
+
+        all_done = all(item["status"] == "completed" for item in fresh_manager.items)
+        self.assertTrue(all_done,
+                        f"All todos should be completed. Got: {fresh_manager.render()}")
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     for cls in (TestTodoManagerUpdate, TestTodoManagerRender,
-                TestTodoRegistration, TestAgentLoopNag):
+                TestTodoRegistration, TestAgentLoopNag,
+                TestIntegrationPkgCreation):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     print()

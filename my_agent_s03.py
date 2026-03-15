@@ -95,10 +95,10 @@ class TodoManager:
         in_progress_cnt = 0
         for item in items:
             id = item.get("id")
-            text = item.get("text")
+            text = item.get("text")  # type: str
             status = item.get("status")
             
-            if len(text) == "":
+            if len(text.strip()) == 0:
                 raise ValueError(f"Item in TODO should have non-empty text, now {id=} have a empty one")
             
             if status not in VALID_STATUS:
@@ -127,7 +127,31 @@ class TodoManager:
     # --------------------------------------------------------
     def render(self) -> str:
         # [YOUR CODE HERE]
-        pass
+        if not self.items:
+            return "No todos."
+
+        results = []
+        status_render_map = {
+            "pending": "[ ]",
+            "in_progress": "[>]",
+            "completed": "[x]"
+        }
+        done_cnt = 0
+
+        for item in self.items:
+            id = item.get("id")
+            text = item.get("text")
+            status = item.get("status")
+            
+            if status == "completed":
+                done_cnt += 1
+
+            result = f"{status_render_map[status]} #{id}: {text}"
+            results.append(result)
+        
+        results.append(f"({done_cnt}/{len(self.items)} completed)")
+
+        return "\n".join(results)
 
 
 TODO = TodoManager()
@@ -199,6 +223,7 @@ TOOL_HANDLERS = {
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     # [YOUR CODE HERE] — add the "todo" entry
+    "todo": lambda **kw: TODO.update(kw["items"])
 }
 
 
@@ -219,6 +244,22 @@ TOOLS = [
     {"name": "edit_file", "description": "Replace exact text in file.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
     # [YOUR CODE HERE] — todo schema
+    {"name": "todo", "description": "Update task list. Track progress on multi-step tasks.",
+     "input_schema": {"type": "object",
+                      "properties": {"items": {
+                          "type": "array",
+                          "items": {
+                              "type": "object",
+                              "properties": {
+                                  "id":     {"type": "string"},
+                                  "text":   {"type": "string"},
+                                  "status": {"type": "string",
+                                             "enum": ["pending", "in_progress", "completed"]},
+                              },
+                              "required": ["id", "text", "status"],
+                          },
+                      }},
+                      "required": ["items"]}},
 ]
 
 
@@ -247,6 +288,7 @@ TOOLS = [
 # ============================================================
 def agent_loop(messages: list):
     # [YOUR CODE HERE] — initialize rounds_since_todo counter
+    rounds_since_todo = 0
     while True:
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
@@ -257,12 +299,36 @@ def agent_loop(messages: list):
             return
         results = []
         # [YOUR CODE HERE] — initialize used_todo flag
+        used_todo = False
         for block in response.content:
             if block.type == "tool_use":
                 handler = TOOL_HANDLERS.get(block.name)
+                
+                if block.name == "todo":
+                    used_todo = True
+
                 # [YOUR CODE HERE] — call handler with try/except,
                 #   track used_todo, print output, append tool_result
+                try:
+                    # 此处的 output 处理了 Unknown tool
+                    output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+                except Exception as e:
+                    # 此处 output 处理了执行 handler 过程中的 exception
+                    output = f"Error: {e}"  # ValueError 转成字符串
+                print(f"> {block.name}: {str(output)[:200]}")
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
+
         # [YOUR CODE HERE] — update rounds_since_todo, inject nag if needed
+        # If rounds_since_todo >= 3 (note: >=, not >):
+        # results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
+        # - insert(0): reminder appears BEFORE tool results, so LLM sees it first
+        # - "type": "text": free-form injection
+        rounds_since_todo += 1
+        if used_todo is True:
+            rounds_since_todo = 0
+        if rounds_since_todo >= 3:
+            results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
+
         messages.append({"role": "user", "content": results})
 
 
