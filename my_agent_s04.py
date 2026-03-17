@@ -147,33 +147,60 @@ CHILD_TOOLS = [
 # Spawn a child agent with a completely fresh context.
 # The child shares TOOL_HANDLERS and the filesystem,
 # but its conversation history starts from scratch (sub_messages = []).
-#
-# Task:
-#   1. Create sub_messages = [{"role": "user", "content": prompt}]
-#   2. Loop up to 30 times (safety limit prevents infinite loops):
-#      a. Call client.messages.create() with SUBAGENT_SYSTEM and CHILD_TOOLS
-#      b. Append the assistant response to sub_messages
-#      c. If stop_reason != "tool_use", break (child is done)
-#      d. Execute all tool_use blocks using TOOL_HANDLERS
-#      e. Append tool results to sub_messages as {"role": "user", "content": results}
-#   3. Extract and return the final text from the last response
-#      - Join all blocks that have a .text attribute
-#      - If no text found, return "(no summary)"
-#
 # Key: sub_messages is LOCAL — it never merges with the parent's messages.
 # ============================================================
 def run_subagent(prompt: str) -> str:
     # Task: implement the subagent loop
-    #   1. Initialize sub_messages with the prompt
-    #   2. Loop (max 30 iterations):
-    #      a. Call LLM with SUBAGENT_SYSTEM, CHILD_TOOLS
-    #      b. Append assistant response
-    #      c. If stop, break
-    #      d. Execute tools, collect results
-    #      e. Append tool results as user message
-    #   3. Return final text (or "(no summary)")
+    #   1. Create sub_messages = [{"role": "user", "content": prompt}]
+    #   2. Loop up to 30 times (safety limit prevents infinite loops):
+    #      a. Call client.messages.create() with SUBAGENT_SYSTEM and CHILD_TOOLS
+    #      b. Append the assistant response to sub_messages
+    #      c. If stop_reason != "tool_use", break (child is done)
+    #      d. Execute all tool_use blocks using TOOL_HANDLERS
+    #      e. Append tool results to sub_messages as {"role": "user", "content": results}
+    #   3. Extract and return the final text from the last response
+    #      - Join all blocks that have a .text attribute
+    #      - If no text found, return "(no summary)"
     # [YOUR CODE HERE]
-    pass
+    print(f"> Starting subtask...")
+
+    sub_messages = [{"role": "user", "content": prompt}]
+    final_summary = ""
+
+    for _ in range(30):
+        response = client.messages.create(
+            model=MODEL, system=SUBAGENT_SYSTEM, messages=sub_messages,
+            tools=CHILD_TOOLS, max_tokens=8000,
+        )
+
+        sub_messages.append({"role": "assistant", "content": response.content})
+        if response.stop_reason != "tool_use":
+            # here should be summary blocks
+            for block in response.content:
+                if hasattr(block, "text"):
+                    final_summary += f"{block.text}"
+            # stop this subagent
+            break
+        else:
+            results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    handler = TOOL_HANDLERS.get(block.name)
+
+                    try:
+                        output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+                    except Exception as e:
+                        output = f"Error: {e}"
+
+                    print(f">>subtask:  [block.name] {str(output)[:200]}")
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
+            
+            sub_messages.append({"role": "user", "content": results})
+
+    if not final_summary:
+        return "(no summary)"
+    else:
+        return final_summary
 
 
 # ============================================================
@@ -233,7 +260,7 @@ def agent_loop(messages: list):
                 #
                 # Task: set `output` based on which tool was called
                 #   If block.name == "task":
-                #     1. Extract description from block.input (default: "subtask")
+                #     1. Extract description and prompt from block.input (default: "subtask")
                 #     2. Print "> task ({desc}): {prompt[:80]}"
                 #     3. output = run_subagent(block.input["prompt"])
                 #   Else:
@@ -241,7 +268,17 @@ def agent_loop(messages: list):
                 #        output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
                 # --------------------------------------------------------
                 # [YOUR CODE HERE]
-                output = "not implemented"  # replace this line
+                
+                try:
+                    if block.name == "task":
+                        desc, prompt = block.input.get("description", "subtask"), block.input.get("prompt")
+                        print(f"> task ({desc}): {prompt[:80]}......")
+                        output = run_subagent(block.input["prompt"])
+                    else:
+                        handler = TOOL_HANDLERS.get(block.name)
+                        output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+                except Exception as e:
+                    output = f"Error: {e}"
 
                 print(f"  {str(output)[:200]}")
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})

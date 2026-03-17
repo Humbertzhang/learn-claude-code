@@ -37,6 +37,11 @@
    - 与 agent_loop 的集成
 4. **用 `ask_question` 确认用户实现状态**，再推进到下一 session
 
+用户完成实现后，AI 应当：
+
+5. **对比实现与原始参考**：将用户实现与 `agents/sXX_*.py` 逐函数对比，指出大问题（逻辑错误、潜在崩溃）和小差异（风格、防御性写法等）
+6. **整理过程中的 Q&A**：将当前 session 中有价值的问答，以"Q: 问题 / A: 简洁回答"格式写入 `notes/noteXX.md` 末尾
+
 ### 3.2 框架文件的结构要求（重要）
 
 `my_agent_sXX.py` 必须与 `agents/sXX_*.py` **整体结构完全一致**，包括：
@@ -100,9 +105,10 @@ pass
 - [x] **环境配置**：`ANTHROPIC_API_KEY` / `.env` 已配置，`requirements.txt` 已安装
 - [x] **s01 完成**：`my_agent_s01.py` 已实现并验证通过
 - [x] **s02 完成**：`my_agent_s02.py` 已实现并验证通过
-- [x] **s03 框架就绪**：`my_agent_s03.py` 框架（含 `[YOUR CODE HERE]` 占位符）已创建，待实现
-- [ ] **s03 实现**：需自行填写关键函数体，通过 `python3 test_s03.py`
-- [ ] s04 — s12 待推进
+- [x] **s03 完成**：`my_agent_s03.py` 已实现并验证通过，笔记见 `notes/note03.md`
+- [x] **s04 框架就绪**：`my_agent_s04.py` 框架（含 `[YOUR CODE HERE]` 占位符）已创建，待实现
+- [ ] **s04 实现**：需自行填写 `run_subagent()` 和 `agent_loop()`，通过 `python3 test_s04.py`
+- [ ] s05 — s12 待推进
 
 ---
 

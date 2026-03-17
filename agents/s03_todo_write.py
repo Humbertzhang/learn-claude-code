@@ -180,10 +180,10 @@ def agent_loop(messages: list):
                     output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
                 except Exception as e:
                     output = f"Error: {e}"
-                print(f"> {block.name}: {str(output)[:200]}")
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
-                if block.name == "todo":
-                    used_todo = True
+            print(f"> {block.name}: {str(output)[:200]}")
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
+            if block.name == "todo":
+                used_todo = True
         rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
         if rounds_since_todo >= 3:
             results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
