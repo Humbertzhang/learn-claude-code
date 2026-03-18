@@ -387,8 +387,8 @@ if __name__ == "__main__":
         print('='*60)
         tests = loader.loadTestsFromTestCase(cls)
         runner = unittest.TextTestRunner(verbosity=2)
-        result = runner.run(tests)
-        suite.addTests(tests)
+        runner.run(tests)
+        suite.addTests(loader.loadTestsFromTestCase(cls))
 
     print("\n" + "="*60)
     print("  Run all: python3 test_s05.py")
