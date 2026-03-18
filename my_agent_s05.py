@@ -52,9 +52,20 @@ class SkillLoader:
         #   4. 从 meta 中取 "name"，若没有则用 f.parent.name 作为 fallback
         #   5. 将 {"meta": meta, "body": body, "path": str(f)} 存入 self.skills[name]
         # [YOUR CODE HERE]
-        pass
+        if not self.skills_dir.exists():
+            return
+        
+        for sf in self.skills_dir.rglob("SKILL.md"):
+            sf_content = sf.read_text()
+            sf_meta, sf_body = self._parse_frontmatter(sf_content)
+            skill_name = sf_meta.get("name", sf.parent.name)
+            self.skills[skill_name] = {
+                "meta": sf_meta,
+                "body": sf_body,
+                "path": str(sf)
+            }
 
-    def _parse_frontmatter(self, text: str) -> tuple:
+    def _parse_frontmatter(self, text: str) -> tuple[dict, str]:
         """Parse YAML frontmatter between --- delimiters.
         
         Task: 解析 SKILL.md 文件中的 YAML frontmatter
@@ -71,10 +82,24 @@ class SkillLoader:
           3. 如果匹配成功，逐行解析 frontmatter：
              - 每行按第一个 ":" 分割成 key, val
              - strip 两端空格后存入 meta dict
+             - 当前教学版先只处理单行 key: value，不要求支持 YAML 多行 description
           4. 返回 (meta, body.strip())
         """
         # [YOUR CODE HERE]
-        pass
+        meta = {}
+
+        match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
+        if not match:
+            return meta, text
+        
+        frontmatter_part = match.group(1)
+        body_part = match.group(2)
+        for line in frontmatter_part.split(sep='\n'):
+            if ":" in line:
+                meta_k, meta_v  = line.split(":", maxsplit=1)
+                meta[meta_k.strip()] = meta_v.strip()
+
+        return meta, body_part.strip()
 
     def get_descriptions(self) -> str:
         """Layer 1: short descriptions for the system prompt.
@@ -85,11 +110,27 @@ class SkillLoader:
              - 从 meta 取 "description"（fallback: "No description"）
              - 从 meta 取 "tags"（可能不存在）
              - 拼接为 "  - {name}: {description}"
-             - 如果有 tags，追加 " [{tags}]"
+             - 如果有 tags，在同一行字符串末尾继续拼接 " [{tags}]"
           3. 用 "\n".join(lines) 返回
         """
         # [YOUR CODE HERE]
-        pass
+        if not self.skills:
+            return "(no skills available)"
+
+        lines = []
+        for name, val in self.skills.items():
+            meta = val.get("meta", {})
+            description = meta.get("description", "No description")
+            line = ""
+            if name and description:
+                line = f"  - {name}: {description}"
+
+            tags = meta.get("tags")
+            if tags:
+                line += f" [{tags}]"
+
+            lines.append(line)
+        return "\n".join(lines)
 
     def get_content(self, name: str) -> str:
         """Layer 2: full skill body returned in tool_result.
@@ -102,8 +143,11 @@ class SkillLoader:
              f'<skill name="{name}">\n{skill["body"]}\n</skill>'
         """
         # [YOUR CODE HERE]
-        pass
+        skill_val = self.skills.get(name)
+        if not skill_val:
+            return f"Error: Unknown skill '{name}'. Available: {', '.join(self.skills.keys())}"
 
+        return f'<skill name="{name}">\n{skill_val["body"]}\n</skill>'
 
 # ============================================================
 # [s05] MODULE-LEVEL SETUP — SkillLoader instance + system prompt

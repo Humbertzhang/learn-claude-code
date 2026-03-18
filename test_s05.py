@@ -211,6 +211,15 @@ class TestGetDescriptions(unittest.TestCase):
         result = loader.get_descriptions()
         self.assertIn("[document]", result)
 
+    def test_tags_stay_on_same_line_as_skill(self):
+        """Tags should be appended to the skill line, not added as a new line."""
+        loader = self._make_loader_with({
+            "pdf": {"meta": {"description": "Process PDFs", "tags": "document"}, "body": "...", "path": ""}
+        })
+        result = loader.get_descriptions()
+        self.assertIn("  - pdf: Process PDFs [document]", result)
+        self.assertEqual(len(result.splitlines()), 1)
+
     def test_omits_tags_bracket_when_absent(self):
         loader = self._make_loader_with({
             "pdf": {"meta": {"description": "Process PDFs"}, "body": "...", "path": ""}
