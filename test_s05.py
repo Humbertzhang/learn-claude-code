@@ -16,6 +16,8 @@ Test groups:
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -370,7 +372,6 @@ class TestAgentLoop(unittest.TestCase):
 # ── Runner ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
 
     groups = [
         ("A. _parse_frontmatter()", TestParseFrontmatter),
@@ -381,15 +382,34 @@ if __name__ == "__main__":
         ("F. agent_loop()",         TestAgentLoop),
     ]
 
-    for label, cls in groups:
-        print(f"\n{'='*60}")
-        print(f"  {label}")
-        print('='*60)
-        tests = loader.loadTestsFromTestCase(cls)
-        runner = unittest.TextTestRunner(verbosity=2)
-        runner.run(tests)
-        suite.addTests(loader.loadTestsFromTestCase(cls))
+    quiet_groups = {"E. TOOL_HANDLERS", "F. agent_loop()"}
+    total_run = 0
+    total_failures = 0
+    total_errors = 0
 
+    for label, cls in groups:
+        tests = loader.loadTestsFromTestCase(cls)
+        if label not in quiet_groups:
+            print(f"\n{'='*60}")
+            print(f"  {label}")
+            print('='*60)
+            runner = unittest.TextTestRunner(verbosity=2)
+            result = runner.run(tests)
+        else:
+            runner = unittest.TextTestRunner(verbosity=0, stream=StringIO())
+            with redirect_stdout(StringIO()):
+                result = runner.run(tests)
+        total_run += result.testsRun
+        total_failures += len(result.failures)
+        total_errors += len(result.errors)
+
+    print("\n" + "="*60)
+    print("  Summary")
+    print("="*60)
+    print(f"Total:   {total_run}")
+    print(f"Passed:  {total_run - total_failures - total_errors}")
+    print(f"Failed:  {total_failures}")
+    print(f"Errors:  {total_errors}")
     print("\n" + "="*60)
     print("  Run all: python3 test_s05.py")
     print("="*60)
