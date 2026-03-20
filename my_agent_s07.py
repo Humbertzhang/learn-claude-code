@@ -61,7 +61,17 @@ class TaskManager:
         #   3. 如果存在任务文件，返回最大 ID
         #   4. 如果目录为空，返回 0
         # [YOUR CODE HERE]
-        pass
+        max_task_id = -1
+
+        for task in sorted(self.dir.glob("task_*.json")):
+            # extract task id
+            task_id = int(task.stem.split("_")[1])
+            max_task_id = max(max_task_id, task_id)
+
+        if max_task_id == -1:
+            return 0
+
+        return max_task_id
 
     def _load(self, task_id: int) -> dict:
         # Task: 按 task_id 从磁盘读取单个任务
@@ -70,7 +80,14 @@ class TaskManager:
         #   3. 读取文本并用 json.loads(...) 转成 dict
         #   4. 返回该 dict
         # [YOUR CODE HERE]
-        pass
+        task_path = self.dir / f"task_{task_id}.json"
+        if not task_path.exists():
+            raise ValueError(f"Task {task_id} not found")
+        
+        with open(task_path, "r") as f:
+            task_dict = json.loads(f.read())
+            return task_dict
+
 
     def _save(self, task: dict):
         # Task: 将任务 dict 保存为 task_{id}.json
@@ -78,7 +95,9 @@ class TaskManager:
         #   2. 用 json.dumps(task, indent=2) 序列化
         #   3. 写入文件
         # [YOUR CODE HERE]
-        pass
+        task_path = self.dir / f"task_{task['id']}.json"
+        with open(task_path, "w") as f:
+            f.write(json.dumps(task, indent=2))
 
     def create(self, subject: str, description: str = "") -> str:
         # Task: 创建一个新的 pending 任务并持久化
@@ -93,14 +112,27 @@ class TaskManager:
         #   4. self._next_id += 1
         #   5. 返回 json.dumps(task, indent=2)
         # [YOUR CODE HERE]
-        pass
+        task_dict = {
+            "id": self._next_id,
+            "subject": subject,
+            "description": description,
+            "status": "pending",
+            "blockedBy": [],
+            "blocks": [],
+            "owner": ""
+        }
+
+        self._save(task_dict)
+        self._next_id += 1
+
+        return json.dumps(task_dict, indent=2)
 
     def get(self, task_id: int) -> str:
         # Task: 返回某个任务的 JSON 字符串表示
         #   1. 调用 self._load(task_id)
         #   2. 用 json.dumps(..., indent=2) 返回
         # [YOUR CODE HERE]
-        pass
+        return json.dumps(self._load(task_id), indent=2)
 
     def update(
         self,
@@ -129,7 +161,38 @@ class TaskManager:
         #   5. 保存当前 task
         #   6. 返回 json.dumps(task, indent=2)
         # [YOUR CODE HERE]
-        pass
+        task = self._load(task_id)
+        valid_task_status = ["pending", "in_progress", "completed"]
+
+        if status:
+            if status not in valid_task_status:
+                raise ValueError(f"Not valid status for task management, given {status=}, {valid_task_status=}")
+            else:
+                task["status"] = status
+                if status == "completed":
+                    self._clear_dependency(task_id)
+
+        if add_blocked_by:
+            task["blockedBy"].extend(add_blocked_by)
+            task["blockedBy"] = list(set(task["blockedBy"]))
+        
+        if add_blocks:
+            task["blocks"].extend(add_blocks)
+            task["blocks"] = list(set(task["blocks"]))
+
+            for blocked_task_id in add_blocks:
+                try:
+                    blocked_task_dict = self._load(blocked_task_id)
+                    if task_id not in set(blocked_task_dict["blockedBy"]):
+                        blocked_task_dict["blockedBy"].append(task_id)
+                        self._save(blocked_task_dict)
+                except ValueError:
+                    pass
+
+        self._save(task)
+
+        return json.dumps(task, indent=2)
+
 
     def _clear_dependency(self, completed_id: int):
         """Remove completed_id from all other tasks' blockedBy lists."""
@@ -140,23 +203,58 @@ class TaskManager:
         #      - 从 blockedBy 中删除它
         #      - 保存该任务
         # [YOUR CODE HERE]
-        pass
+        for task_path in sorted(self.dir.glob("task_*.json")):
+            task_id = int(task_path.stem.split("_")[1])
+            task_dict = self._load(task_id)
+
+            if completed_id in task_dict.get("blockedBy", []):
+                task_dict["blockedBy"].remove(completed_id)
+                self._save(task_dict)
+
 
     def list_all(self) -> str:
         # Task: 以简洁看板格式列出所有任务
         #   1. 按文件名排序遍历 self.dir.glob("task_*.json")
         #   2. 读出所有任务；如果一个都没有，返回 "No tasks."
-        #   3. 对每个任务生成一行：
+        #   3. 对每个任务，先在循环里自己定义一个局部变量 marker
+        #      marker 表示“这个任务当前状态对应的显示标签”：
         #      - pending -> "[ ]"
         #      - in_progress -> "[>]"
         #      - completed -> "[x]"
         #      - 其他未知状态 -> "[?]"
-        #   4. 基础格式：f"{marker} #{id}: {subject}"
+        #   4. 再拼出基础格式：
+        #      f"{marker} #{task['id']}: {task['subject']}"
         #   5. 如果该任务有 blockedBy，再拼接：
         #      f" (blocked by: {task['blockedBy']})"
         #   6. 用 "\n".join(lines) 返回
         # [YOUR CODE HERE]
-        pass
+        tasks = []
+
+        for task_path in sorted(self.dir.glob("task_*.json")):
+            task_id = int(task_path.stem.split("_")[1])
+            task_dict = self._load(task_id)
+            
+            status = task_dict["status"]
+            
+            marker_map = {
+                "pending": "[ ]",
+                "in_progress": "[>]",
+                "completed": "[x]",
+                "unknown": "[?]"
+            }
+            marker = "[?]"
+            if status in marker_map.keys():
+                marker = marker_map[status]
+            
+            task_line = f"{marker} #{task_dict['id']}: {task_dict['subject']}"
+            if task_dict.get("blockedBy"):
+                task_line += f" (blocked by: {task_dict['blockedBy']})"
+
+            tasks.append(task_line)
+
+        if tasks:
+            return "\n".join(tasks)
+        return "No tasks."
 
 
 TASKS = TaskManager(TASKS_DIR)
