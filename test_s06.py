@@ -168,6 +168,45 @@ class TestAutoCompact(unittest.TestCase):
         self.assertEqual(result[1]["role"], "assistant")
         self.assertIn("Understood", result[1]["content"])
 
+    def test_transcript_writes_one_json_object_per_line(self):
+        messages = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.object(m, "TRANSCRIPT_DIR", Path(tmpdir) / ".transcripts"), \
+             patch.object(m.client.messages, "create", return_value=make_stop_response("summary")):
+            m.auto_compact(messages)
+            files = list((Path(tmpdir) / ".transcripts").glob("transcript_*.jsonl"))
+            self.assertEqual(len(files), 1)
+            lines = files[0].read_text().splitlines()
+
+        self.assertEqual(len(lines), len(messages),
+                         "Transcript must be JSONL: one message per line")
+        for line in lines:
+            self.assertIn('"role"', line)
+
+    def test_summary_prompt_uses_truncated_conversation_text(self):
+        # Put marker near the tail so it should be dropped by [:80000].
+        long_tail = "A" * 90000 + "TAIL_MARKER_SHOULD_NOT_APPEAR"
+        messages = [{"role": "user", "content": long_tail}]
+        captured = {}
+
+        def fake_create(**kw):
+            captured.update(kw)
+            return make_stop_response("summary")
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.object(m, "TRANSCRIPT_DIR", Path(tmpdir) / ".transcripts"), \
+             patch.object(m.client.messages, "create", side_effect=fake_create):
+            m.auto_compact(messages)
+
+        sent_prompt = captured["messages"][0]["content"]
+        self.assertNotIn("TAIL_MARKER_SHOULD_NOT_APPEAR", sent_prompt,
+                         "Prompt should include truncated conversation text (<= 80000 chars)")
+
 
 # ── D. compact tool ──────────────────────────────────────────────────────────
 class TestCompactTool(unittest.TestCase):
@@ -298,7 +337,7 @@ if __name__ == "__main__":
         ("E. agent_loop()",      TestAgentLoop),
     ]
 
-    quiet_groups = {"D. compact tool", "E. agent_loop()"}
+    quiet_groups = set()
     total_run = 0
     total_failures = 0
     total_errors = 0
