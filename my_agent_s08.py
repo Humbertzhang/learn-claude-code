@@ -23,10 +23,6 @@ s08 新增机制：把长耗时 shell 命令放到后台线程里执行，agent 
 核心思想：
   "慢操作 fire-and-forget；完成结果在下一轮思考前补回来。"
 
-说明：
-  虽然你刚完成的是 s07，但 s08 的参考实现会聚焦“后台并发 + 通知注入”，
-  不再保留 task graph；这里按参考文件结构原样提供学习骨架。
-
 运行测试：python3 test_s08.py
 """
 
@@ -74,7 +70,17 @@ class BackgroundManager:
         #   4. 调用 thread.start()
         #   5. 返回 f"Background task {task_id} started: {command[:80]}"
         # [YOUR CODE HERE]
-        pass
+        task_id = str(uuid.uuid4())[:8]
+        self.tasks[task_id] = {
+            "status": "running",
+            "result": None,
+            "command": command
+        }
+
+        thread = threading.Thread(target=self._execute, args=(task_id, command), daemon=True)
+        thread.start()
+
+        return f"Background task {task_id} started: {command[:80]}"
 
     def _execute(self, task_id: str, command: str):
         """Thread target: run subprocess, capture output, push to queue."""
@@ -103,7 +109,32 @@ class BackgroundManager:
         #        "result": (output or "(no output)")[:500],
         #      }
         # [YOUR CODE HERE]
-        pass
+        try:
+            r = subprocess.run(
+                command, shell=True, cwd=WORKDIR,
+                capture_output=True, text=True, timeout=300
+            )
+
+            output = (r.stdout + r.stderr).strip()[:50000]
+            status = "completed"
+        except subprocess.TimeoutExpired:
+            output = "Error: Timeout (300s)"
+            status = "timeout"
+        except Exception as e:
+            output = f"Error: {e}"
+            status = "error"
+        
+        self.tasks[task_id]["status"] = status
+        self.tasks[task_id]["result"] = output or "(no output)"
+
+        with self._lock:
+            self._notification_queue.append({
+                    "task_id": task_id,
+                    "status": status,
+                    "command": command[:80],
+                    "result": (output or "(no output)")[:500],
+                })
+
 
     def check(self, task_id: str = None) -> str:
         """Check status of one task or list all."""
@@ -119,7 +150,24 @@ class BackgroundManager:
         #      - 若没有任务，返回 "No background tasks."
         #      - 否则返回 "\n".join(lines)
         # [YOUR CODE HERE]
-        pass
+        if task_id:
+            # query for one task
+            t = self.tasks.get(task_id)
+            if not t:
+                return f"Error: Unknown task {task_id}"
+            else:
+                return f"[{t['status']}] {t['command'][:60]}\n{t.get('result') or '(running)'}"
+        else:
+            # query for list
+            lines = []
+            for tid, t in self.tasks.items():
+                lines.append(f"{tid}: [{t['status']}] {t['command'][:60]}")
+            if not lines:
+                return "No background tasks."
+
+            return "\n".join(lines)
+
+
 
     def drain_notifications(self) -> list:
         """Return and clear all pending completion notifications."""
@@ -129,7 +177,11 @@ class BackgroundManager:
         #   3. self._notification_queue.clear()
         #   4. 返回 notifs
         # [YOUR CODE HERE]
-        pass
+        with self._lock:
+            ns = list(self._notification_queue)
+            self._notification_queue.clear()
+            return ns
+
 
 
 BG = BackgroundManager()
@@ -243,6 +295,20 @@ def agent_loop(messages: list):
         #      - 再 append 一条 assistant 消息：
         #        "Noted background results."
         # [YOUR CODE HERE]
+
+        notifs = BG.drain_notifications()
+        if notifs and messages:
+            nts = []
+            for n in notifs:
+                nts.append(f"[bg:{n['task_id']}] {n['status']}: {n['result']}")
+            notif_text = "\n".join(nts)
+
+            messages.append(
+                {"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>"}
+            )
+            messages.append(
+                {"role": "assistant", "content": "Noted background results."}
+            )
 
         response = client.messages.create(
             model=MODEL,
