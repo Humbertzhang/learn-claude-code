@@ -6,3 +6,20 @@
 解决方案：多智能体持久化存活；智能体之间通信；多智能体的管理（智能体身份、生命周期）
 
 
+本节实现重点：
+1. 主Agent可以 启动 子 agent，并对其进行管理
+2. 子agent之间通过jsonl信箱互相通信
+
+# Q&A
+
+Q: Claude Code 支持多智能体吗？
+A: 支持，但要区分两层概念：官方支持 `subagents`，而且当前也支持实验性的 `agent teams`。前者偏一次性委派，后者偏持久化协作团队。
+
+Q: `subagent` 和 `agent teams` 的核心区别是什么？
+A: `subagent` 是临时工，拿一份新上下文完成子任务后只返回摘要并销毁；`agent teams` 是长期队友，具备身份、状态、持久化名册和 agent 间通信能力。
+
+Q: 主智能体如何管理子智能体的生命周期？
+A: 在 s04 里，主智能体只是调用 `run_subagent()`，子智能体创建后执行、返回摘要、随即销毁；在 s09 里，主智能体通过 `TeammateManager` 管理持久队友的 `working -> idle -> shutdown` 生命周期。
+
+Q: `TeammateManager` 和主智能体是什么关系？
+A: `TeammateManager` 不是另一个主智能体，而是主智能体手里的“团队管理器”。主智能体负责决策，`TeammateManager` 负责名册、状态和线程调度，`MessageBus` 负责通信。

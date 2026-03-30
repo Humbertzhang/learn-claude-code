@@ -54,6 +54,12 @@
 > ❌ 不能：改变函数顺序、将全局变量改为局部变量、省略某些函数
 > ✅ 可以：在注释中添加提示，替换函数体为占位符
 
+**关于历史内容的继承规则**（重要）：
+
+- **每节只要求实现当前 session 新增的内容**，已在前序 session 中学过的函数（如 `agent_loop`、`run_bash`、`run_read` 等）直接以完整代码形式写入框架，不再留 `[YOUR CODE HERE]` 占位符
+- 这样框架文件在任何时候都是**可运行的最小完整版本**（只有本节新函数是空的）
+- 例如：s05 框架中 `agent_loop` 直接继承 s02 实现，学习焦点只在 `SkillLoader` 类
+
 ### 3.3 实现指引格式
 
 在 `my_agent_sXX.py` 中，每个 `[YOUR CODE HERE]` 块应附带：
@@ -106,9 +112,10 @@ pass
 - [x] **s01 完成**：`my_agent_s01.py` 已实现并验证通过
 - [x] **s02 完成**：`my_agent_s02.py` 已实现并验证通过
 - [x] **s03 完成**：`my_agent_s03.py` 已实现并验证通过，笔记见 `notes/note03.md`
-- [x] **s04 框架就绪**：`my_agent_s04.py` 框架（含 `[YOUR CODE HERE]` 占位符）已创建，待实现
-- [ ] **s04 实现**：需自行填写 `run_subagent()` 和 `agent_loop()`，通过 `python3 test_s04.py`
-- [ ] s05 — s12 待推进
+- [x] **s04 完成**：`my_agent_s04.py` 已实现并验证通过
+- [x] **s05 框架就绪**：`my_agent_s05.py` 框架（含 `[YOUR CODE HERE]` 占位符）已创建，待实现
+- [ ] **s05 实现**：需自行填写 `SkillLoader` 的四个方法 + `agent_loop()`，通过 `python3 test_s05.py`
+- [ ] s06 — s12 待推进
 
 ---
 

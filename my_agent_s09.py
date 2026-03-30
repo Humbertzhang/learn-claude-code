@@ -328,8 +328,7 @@ class TeammateManager:
                         "tool_use_id": block.id,
                         "content": str(output),
                     })
-
-                    messages.append({"role": "user", "content": results})
+            messages.append({"role": "user", "content": results})
         
         member = self._find_member(name)
         if member and member["status"] != "shutdown":
@@ -405,14 +404,21 @@ class TeammateManager:
         #      f"  {m['name']} ({m['role']}): {m['status']}"
         #   4. 返回 "\n".join(lines)
         # [YOUR CODE HERE]
-        pass
+        if not self.config["members"]:
+            return "No teammates."
+        lines = [f"Team: {self.config['team_name']}"]
+        for m in self.config["members"]:
+            lines.append(f"  {m['name']} ({m['role']}): {m['status']}")
+        
+        return "\n".join(lines)
+
 
     def member_names(self) -> list:
         # Task: 返回所有队友名字列表
         #   1. 遍历 self.config["members"]
         #   2. 返回 [m["name"] for m in ...]
         # [YOUR CODE HERE]
-        pass
+        return [m["name"] for m in self.config["members"]]            
 
 
 TEAM = TeammateManager(TEAM_DIR)
@@ -577,7 +583,7 @@ if __name__ == "__main__":
             query = input("\033[36ms09 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
-        if query.strip().lower() in ("q", "exit", ""):
+        if query.strip().lower() in ("q", "exit"):
             break
         if query.strip() == "/team":
             print(TEAM.list_all())

@@ -79,6 +79,21 @@ def make_tool_response(name, inputs, tool_id="t1"):
     return resp
 
 
+def make_multi_tool_response(tool_specs):
+    resp = MagicMock()
+    resp.stop_reason = "tool_use"
+    blocks = []
+    for name, inputs, tool_id in tool_specs:
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = name
+        block.input = inputs
+        block.id = tool_id
+        blocks.append(block)
+    resp.content = blocks
+    return resp
+
+
 def create_bus(tmpdir: str) -> m.MessageBus:
     return m.MessageBus(Path(tmpdir) / "inbox")
 
@@ -365,6 +380,48 @@ class TestTeammateExecution(unittest.TestCase):
             self.assertEqual(inbox_payload["from"], "lead")
             self.assertEqual(inbox_payload["content"], "Please inspect tests")
             self.assertEqual(manager._find_member("alice")["status"], "idle")
+
+    def test_teammate_loop_appends_one_result_message_for_multiple_tool_uses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            manager.config = {
+                "team_name": "default",
+                "members": [{"name": "alice", "role": "coder", "status": "working"}],
+            }
+            captured = {}
+            responses = [
+                make_multi_tool_response([
+                    ("read_file", {"path": "README.md"}, "t1"),
+                    ("read_file", {"path": "INSTRUCTION.md"}, "t2"),
+                ]),
+                make_stop_response("done"),
+            ]
+
+            def fake_create(**kw):
+                messages_copy = []
+                for msg in kw["messages"]:
+                    copied = dict(msg)
+                    if isinstance(copied.get("content"), list):
+                        copied["content"] = list(copied["content"])
+                    messages_copy.append(copied)
+                captured.setdefault("calls", []).append(messages_copy)
+                return responses.pop(0)
+
+            with patch.object(m.client.messages, "create", side_effect=fake_create), \
+                 patch.object(manager, "_exec", side_effect=["first result", "second result"]) as mock_exec:
+                manager._teammate_loop("alice", "coder", "Start working")
+
+            mock_exec.assert_any_call("alice", "read_file", {"path": "README.md"})
+            mock_exec.assert_any_call("alice", "read_file", {"path": "INSTRUCTION.md"})
+            second_call_messages = captured["calls"][1]
+            result_messages = [
+                msg for msg in second_call_messages
+                if msg["role"] == "user" and isinstance(msg["content"], list)
+            ]
+            self.assertEqual(len(result_messages), 1)
+            self.assertEqual(len(result_messages[0]["content"]), 2)
+            self.assertEqual(result_messages[0]["content"][0]["content"], "first result")
+            self.assertEqual(result_messages[0]["content"][1]["content"], "second result")
 
 
 # ── E. team tool registration ───────────────────────────────────────────────
