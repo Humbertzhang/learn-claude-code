@@ -18,6 +18,7 @@ import sys
 import tempfile
 import types
 import unittest
+import builtins
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -151,6 +152,33 @@ class TestLeadProtocolHandlers(ProtocolStateMixin, unittest.TestCase):
             self.assertTrue(inbox[0]["approve"])
             self.assertEqual(inbox[0]["feedback"], "Looks good")
 
+    def test_handle_plan_review_rejects_known_request_and_preserves_other_requests(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bus = create_bus(tmpdir)
+            m.plan_requests["plan1234"] = {
+                "from": "alice",
+                "plan": "Fix parser",
+                "status": "pending",
+            }
+            m.plan_requests["plan5678"] = {
+                "from": "bob",
+                "plan": "Refactor tests",
+                "status": "pending",
+            }
+
+            with patch.object(m, "BUS", bus):
+                result = m.handle_plan_review("plan1234", False, "Needs more detail")
+
+            self.assertEqual(result, "Plan rejected for 'alice'")
+            self.assertEqual(m.plan_requests["plan1234"]["status"], "rejected")
+            self.assertEqual(m.plan_requests["plan5678"]["status"], "pending")
+
+            inbox = bus.read_inbox("alice")
+            self.assertEqual(len(inbox), 1)
+            self.assertEqual(inbox[0]["type"], "plan_approval_response")
+            self.assertFalse(inbox[0]["approve"])
+            self.assertEqual(inbox[0]["feedback"], "Needs more detail")
+
     def test_check_shutdown_status_returns_json_for_known_and_missing_requests(self):
         m.shutdown_requests["shut1234"] = {"target": "alice", "status": "pending"}
 
@@ -165,6 +193,46 @@ class TestLeadProtocolHandlers(ProtocolStateMixin, unittest.TestCase):
 
         self.assertEqual(known, {"target": "alice", "status": "pending"})
         self.assertEqual(missing, {"error": "not found"})
+
+    def test_check_shutdown_status_returns_approved_and_rejected_states(self):
+        m.shutdown_requests["req_yes"] = {"target": "alice", "status": "approved"}
+        m.shutdown_requests["req_no"] = {"target": "bob", "status": "rejected"}
+
+        approved_raw = m._check_shutdown_status("req_yes")
+        rejected_raw = m._check_shutdown_status("req_no")
+
+        self.assertIsInstance(approved_raw, str)
+        self.assertIsInstance(rejected_raw, str)
+
+        approved = json.loads(approved_raw)
+        rejected = json.loads(rejected_raw)
+
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["target"], "alice")
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["target"], "bob")
+
+    def test_handle_shutdown_request_generates_distinct_request_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bus = create_bus(tmpdir)
+
+            with patch.object(m, "BUS", bus), \
+                 patch.object(m.uuid, "uuid4", side_effect=["req11111-aaaa", "req22222-bbbb"]):
+                first = m.handle_shutdown_request("alice")
+                second = m.handle_shutdown_request("bob")
+
+            self.assertEqual(
+                first,
+                "Shutdown request req11111 sent to 'alice' (status: pending)",
+            )
+            self.assertEqual(
+                second,
+                "Shutdown request req22222 sent to 'bob' (status: pending)",
+            )
+            self.assertIn("req11111", m.shutdown_requests)
+            self.assertIn("req22222", m.shutdown_requests)
+            self.assertEqual(m.shutdown_requests["req11111"]["target"], "alice")
+            self.assertEqual(m.shutdown_requests["req22222"]["target"], "bob")
 
 
 # ── B. teammate protocol execution ──────────────────────────────────────────
@@ -193,6 +261,30 @@ class TestTeammateProtocolExecution(ProtocolStateMixin, unittest.TestCase):
             self.assertEqual(inbox[0]["content"], "Done here")
             self.assertEqual(inbox[0]["request_id"], "req12345")
             self.assertTrue(inbox[0]["approve"])
+
+    def test_exec_shutdown_response_rejects_request_and_preserves_other_shutdowns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            bus = create_bus(tmpdir)
+            m.shutdown_requests["req12345"] = {"target": "alice", "status": "pending"}
+            m.shutdown_requests["req99999"] = {"target": "bob", "status": "pending"}
+
+            with patch.object(m, "BUS", bus):
+                result = manager._exec(
+                    "alice",
+                    "shutdown_response",
+                    {"request_id": "req12345", "approve": False, "reason": "Still working"},
+                )
+
+            self.assertEqual(result, "Shutdown rejected")
+            self.assertEqual(m.shutdown_requests["req12345"]["status"], "rejected")
+            self.assertEqual(m.shutdown_requests["req99999"]["status"], "pending")
+
+            inbox = bus.read_inbox("lead")
+            self.assertEqual(len(inbox), 1)
+            self.assertEqual(inbox[0]["type"], "shutdown_response")
+            self.assertFalse(inbox[0]["approve"])
+            self.assertEqual(inbox[0]["content"], "Still working")
 
     def test_exec_plan_approval_creates_pending_request_and_notifies_lead(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -227,6 +319,29 @@ class TestTeammateProtocolExecution(ProtocolStateMixin, unittest.TestCase):
             self.assertEqual(inbox[0]["content"], "1. Read the failing tests\n2. Patch the bug")
             self.assertEqual(inbox[0]["request_id"], "plan8888")
             self.assertEqual(inbox[0]["plan"], "1. Read the failing tests\n2. Patch the bug")
+
+    def test_exec_plan_approval_creates_independent_requests_for_multiple_teammates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            bus = create_bus(tmpdir)
+
+            with patch.object(m, "BUS", bus), \
+                 patch.object(m.uuid, "uuid4", side_effect=["plan1111-aaaa", "plan2222-bbbb"]):
+                first = manager._exec("alice", "plan_approval", {"plan": "Fix parser"})
+                second = manager._exec("bob", "plan_approval", {"plan": "Add tests"})
+
+            self.assertEqual(
+                first,
+                "Plan submitted (request_id=plan1111). Waiting for lead approval.",
+            )
+            self.assertEqual(
+                second,
+                "Plan submitted (request_id=plan2222). Waiting for lead approval.",
+            )
+            self.assertEqual(m.plan_requests["plan1111"]["from"], "alice")
+            self.assertEqual(m.plan_requests["plan2222"]["from"], "bob")
+            self.assertEqual(m.plan_requests["plan1111"]["status"], "pending")
+            self.assertEqual(m.plan_requests["plan2222"]["status"], "pending")
 
     def test_teammate_tools_include_protocol_tools_and_expected_schemas(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -284,11 +399,33 @@ class TestTeammateLoopProtocols(ProtocolStateMixin, unittest.TestCase):
                 return responses.pop(0)
 
             with patch.object(m.client.messages, "create", side_effect=fake_create), \
+                 patch.object(builtins, "print"), \
                  patch.object(manager, "_exec", return_value="Shutdown approved"):
                 manager._teammate_loop("alice", "coder", "Start working")
 
             self.assertIn("Submit plans via plan_approval", captured["system"])
             self.assertIn("Respond to shutdown_request with shutdown_response", captured["system"])
+            self.assertEqual(manager._find_member("alice")["status"], "shutdown")
+
+    def test_teammate_loop_stops_before_second_llm_call_after_approved_shutdown(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            manager.config = {
+                "team_name": "default",
+                "members": [{"name": "alice", "role": "coder", "status": "working"}],
+            }
+            response = make_tool_response(
+                "shutdown_response",
+                {"request_id": "req12345", "approve": True},
+                "t1",
+            )
+
+            with patch.object(m.client.messages, "create", return_value=response) as mock_create, \
+                 patch.object(builtins, "print"), \
+                 patch.object(manager, "_exec", return_value="Shutdown approved"):
+                manager._teammate_loop("alice", "coder", "Start working")
+
+            self.assertEqual(mock_create.call_count, 1)
             self.assertEqual(manager._find_member("alice")["status"], "shutdown")
 
     def test_teammate_loop_rejected_shutdown_finishes_idle(self):
@@ -308,6 +445,7 @@ class TestTeammateLoopProtocols(ProtocolStateMixin, unittest.TestCase):
             ]
 
             with patch.object(m.client.messages, "create", side_effect=responses), \
+                 patch.object(builtins, "print"), \
                  patch.object(manager, "_exec", return_value="Shutdown rejected"):
                 manager._teammate_loop("alice", "coder", "Start working")
 
