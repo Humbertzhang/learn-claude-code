@@ -99,7 +99,7 @@ class MessageBus:
         #   1. 先校验 msg_type 是否在 VALID_MSG_TYPES 中
         #      - 不合法时返回：
         #        f"Error: Invalid type '{msg_type}'. Valid: {VALID_MSG_TYPES}"
-        #   2. 构造 msg dict，字段与参考实现保持一致：
+        #   2. 构造 msg dict，包含以下字段：
         #      - type / from / content / timestamp
         #      - timestamp 用 time.time()
         #   3. 如果 extra 存在，调用 msg.update(extra)
@@ -107,7 +107,23 @@ class MessageBus:
         #   5. 用追加模式写入一行 json.dumps(msg) + "\n"
         #   6. 返回 f"Sent {msg_type} to {to}"
         # [YOUR CODE HERE]
-        pass
+        if msg_type not in VALID_MSG_TYPES:
+            return f"Error: Invalid type '{msg_type}'. Valid: {VALID_MSG_TYPES}"
+
+        msg = {
+            "type": msg_type,
+            "from": sender,
+            "content": content,
+            "timestamp": time.time()
+        }
+        if extra:
+            msg.update(extra)
+        
+        inbox_path = self.dir / f"{to}.jsonl"
+        with open(inbox_path, "a+") as f:
+            f.write(json.dumps(msg) + "\n")
+        
+        return f"Sent {msg_type} to {to}"
 
     def read_inbox(self, name: str) -> list:
         # Task: 读取并清空某个队友的收件箱
@@ -118,7 +134,26 @@ class MessageBus:
         #   5. 读取完成后，用 inbox_path.write_text("") 清空文件（drain）
         #   6. 返回 messages
         # [YOUR CODE HERE]
-        pass
+        inbox_path = self.dir / f"{name}.jsonl"
+        inbox_msgs = None
+        messages = []
+
+        if not inbox_path.exists():
+            return []
+        
+        with open(inbox_path, "r") as f:
+            inbox_msgs = f.read()
+            inbox_msgs = inbox_msgs.splitlines()
+        
+        for msg in inbox_msgs:
+            if msg.strip():
+                msg_d = json.loads(msg)
+                messages.append(msg_d)
+        
+        inbox_path.write_text("")
+
+        return messages
+
 
     def broadcast(self, sender: str, content: str, teammates: list) -> str:
         # Task: 广播给除 sender 外的所有队友
@@ -129,7 +164,13 @@ class MessageBus:
         #      - count += 1
         #   4. 返回 f"Broadcast to {count} teammates"
         # [YOUR CODE HERE]
-        pass
+        count = 0
+        for tm_name in teammates:
+            if tm_name != sender:
+                self.send(sender, tm_name, content, "broadcast")
+                count += 1
+        
+        return f"Broadcast to {count} teammates"
 
 
 BUS = MessageBus(INBOX_DIR)
@@ -154,14 +195,22 @@ class TeammateManager:
         #   2. 否则返回：
         #      {"team_name": "default", "members": []}
         # [YOUR CODE HERE]
-        pass
+        if self.config_path.exists():
+            with open(self.config_path, "r") as f:
+                config_content = f.read()
+                return json.loads(config_content)
+
+        return {"team_name": "default", "members": []}
+
 
     def _save_config(self):
         # Task: 将当前 self.config 保存到 config.json
         #   1. 用 json.dumps(self.config, indent=2)
         #   2. 写入 self.config_path
         # [YOUR CODE HERE]
-        pass
+        with open(self.config_path, "w") as f:
+            f.write(json.dumps(self.config, indent=2))
+
 
     def _find_member(self, name: str) -> dict:
         # Task: 在 self.config["members"] 中按名字查找成员
@@ -169,7 +218,11 @@ class TeammateManager:
         #   2. 若 m["name"] == name，返回该 dict
         #   3. 如果没找到，返回 None
         # [YOUR CODE HERE]
-        pass
+        for m in self.config["members"]:
+            if m["name"] == name:
+                return m
+        
+        return None
 
     def spawn(self, name: str, role: str, prompt: str) -> str:
         # Task: 启动一个持久化队友线程
@@ -191,7 +244,23 @@ class TeammateManager:
         #   7. 调用 thread.start()
         #   8. 返回 f"Spawned '{name}' (role: {role})"
         # [YOUR CODE HERE]
-        pass
+        member = self._find_member(name)
+        if member:
+            if member["status"] not in ["idle", "shutdown"]:
+                return f"Error: '{name}' is currently {member['status']}"
+            member["status"] = "working"
+            member["role"] = role
+        else:
+            member = {"name": name, "role": role, "status": "working"}
+            self.config["members"].append(member)
+        
+        self._save_config()
+
+        t = threading.Thread(target=self._teammate_loop, args=(name, role, prompt), daemon=True)
+        self.threads[name] = t
+        t.start()
+
+        return f"Spawned '{name}' (role: {role})"
 
     def _teammate_loop(self, name: str, role: str, prompt: str):
         # Task: 让某个队友在独立线程中运行自己的 agent loop
@@ -205,7 +274,7 @@ class TeammateManager:
         #      - 对 inbox 里的每条 msg：
         #        messages.append({"role": "user", "content": json.dumps(msg)})
         #      - try 调用 client.messages.create(...)
-        #        参数与参考实现保持一致：model / system / messages / tools / max_tokens
+        #        传入这些参数：model / system / messages / tools / max_tokens
         #      - except Exception: break
         #      - append assistant 消息：{"role": "assistant", "content": response.content}
         #      - 如果 response.stop_reason != "tool_use": break
@@ -224,7 +293,49 @@ class TeammateManager:
         #        member["status"] = "idle"
         #        self._save_config()
         # [YOUR CODE HERE]
-        pass
+        sys_prompt = f"""You are '{name}', role: {role}, at {WORKDIR}.\nUse send_message to communicate. Complete your task."""
+        messages = [{"role": "user", "content": prompt}]
+        tools = self._teammate_tools()
+
+        # 最多50次 loop
+        for _ in range(50):
+            inbox = BUS.read_inbox(name)
+            for msg in inbox:
+                messages.append({"role": "user", "content": json.dumps(msg)})
+            try:
+                response = client.messages.create(
+                    model=MODEL,
+                    system=sys_prompt,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=8000,
+                )
+            except Exception: 
+                break
+
+            messages.append({"role": "assistant", "content": response.content})
+            if response.stop_reason != "tool_use":
+                break
+            
+            # 执行各种工具调用
+            results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    output = self._exec(name, block.name, block.input)
+                    print(f"  [{name}] {block.name}: {str(output)[:120]}")
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": str(output),
+                    })
+
+                    messages.append({"role": "user", "content": results})
+        
+        member = self._find_member(name)
+        if member and member["status"] != "shutdown":
+            member["status"] = "idle"
+            self._save_config()
+
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
         # Task: 在队友线程里分发工具调用
@@ -242,11 +353,23 @@ class TeammateManager:
         #      return json.dumps(BUS.read_inbox(sender), indent=2)
         #   7. 否则返回 f"Unknown tool: {tool_name}"
         # [YOUR CODE HERE]
-        pass
+        if tool_name == "bash":
+            return _run_bash(args["command"])
+        if tool_name == "read_file":
+            return _run_read(args["path"])
+        if tool_name == "write_file":
+            return _run_write(args["path"], args["content"])
+        if tool_name == "edit_file":
+            return _run_edit(args["path"], args["old_text"], args["new_text"])
+        if tool_name == "send_message":
+            return BUS.send(sender, args["to"], args["content"], args.get("msg_type", "message"))
+        if tool_name == "read_inbox":
+            return json.dumps(BUS.read_inbox(sender), indent=2)
+        return f"Unknown tool: {tool_name}"
 
     def _teammate_tools(self) -> list:
         # Task: 返回队友可用的工具 schema 列表
-        #   1. 返回一个 list，顺序与参考实现保持一致
+        #   1. 返回一个 list，工具顺序固定如下
         #   2. 工具共 6 个：
         #      - bash
         #      - read_file
@@ -257,7 +380,22 @@ class TeammateManager:
         #   3. send_message 的 msg_type schema 要使用：
         #      {"type": "string", "enum": list(VALID_MSG_TYPES)}
         # [YOUR CODE HERE]
-        pass
+        TEAMMATE_TOOLS = [
+            {"name": "bash", "description": "Run a shell command.",
+            "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+            {"name": "read_file", "description": "Read file contents.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
+            {"name": "write_file", "description": "Write content to file.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+            {"name": "edit_file", "description": "Replace exact text in file.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+            {"name": "send_message", "description": "Send a message to a teammate's inbox.",
+            "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "content": {"type": "string"}, "msg_type": {"type": "string", "enum": list(VALID_MSG_TYPES)}}, "required": ["to", "content"]}},
+            {"name": "read_inbox", "description": "Read and drain the lead's inbox.",
+            "input_schema": {"type": "object", "properties": {}}},
+        ]
+
+        return TEAMMATE_TOOLS
 
     def list_all(self) -> str:
         # Task: 以人类可读格式列出团队成员
@@ -397,7 +535,13 @@ def agent_loop(messages: list):
         #      - 再 append 一条 assistant 消息：
         #        {"role": "assistant", "content": "Noted inbox messages."}
         # [YOUR CODE HERE]
-        pass
+        inbox = BUS.read_inbox("lead")
+        if inbox:
+            messages.append({
+                "role": "user",
+                "content": f"<inbox>{json.dumps(inbox, indent=2)}</inbox>",
+            })
+            messages.append({"role": "assistant", "content": "Noted inbox messages."})
 
         response = client.messages.create(
             model=MODEL,

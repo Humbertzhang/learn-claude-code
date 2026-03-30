@@ -235,6 +235,44 @@ class TestTeammateManagerConfigAndSpawn(unittest.TestCase):
             self.assertEqual(result, "Error: 'alice' is currently working")
             mock_thread.assert_not_called()
 
+    def test_list_all_returns_no_teammates_when_team_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            manager.config = {"team_name": "default", "members": []}
+
+            self.assertEqual(manager.list_all(), "No teammates.")
+
+    def test_list_all_formats_team_name_and_member_statuses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            manager.config = {
+                "team_name": "research",
+                "members": [
+                    {"name": "alice", "role": "coder", "status": "idle"},
+                    {"name": "bob", "role": "tester", "status": "working"},
+                ],
+            }
+
+            listing = manager.list_all()
+
+            self.assertIn("Team: research", listing)
+            self.assertIn("  alice (coder): idle", listing)
+            self.assertIn("  bob (tester): working", listing)
+
+    def test_member_names_returns_names_in_config_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = create_manager(tmpdir)
+            manager.config = {
+                "team_name": "default",
+                "members": [
+                    {"name": "alice", "role": "coder", "status": "idle"},
+                    {"name": "bob", "role": "tester", "status": "working"},
+                    {"name": "carol", "role": "reviewer", "status": "shutdown"},
+                ],
+            }
+
+            self.assertEqual(manager.member_names(), ["alice", "bob", "carol"])
+
 
 # ── D. TeammateManager _exec() / _teammate_tools() / _teammate_loop() ──────
 class TestTeammateExecution(unittest.TestCase):
