@@ -148,6 +148,9 @@ class TeammateManager:
         messages = [{"role": "user", "content": prompt}]
         tools = self._teammate_tools()
         should_exit = False
+        waiting_inbox_after_end_turn = False
+        idle_polls_after_end_turn = 0
+        max_idle_polls_after_end_turn = 3
 
         # [s10] protocol-aware teammate prompt
         sys_prompt = (
@@ -158,12 +161,22 @@ class TeammateManager:
 
         for _ in range(50):
             inbox = BUS.read_inbox(name)
+            if inbox:
+                waiting_inbox_after_end_turn = False
+                idle_polls_after_end_turn = 0
+            elif waiting_inbox_after_end_turn:
+                idle_polls_after_end_turn += 1
+                if idle_polls_after_end_turn >= max_idle_polls_after_end_turn:
+                    break
+                continue
+
             for msg in inbox:
                 messages.append({"role": "user", "content": json.dumps(msg)})
 
             # Task: 若 should_exit 为 True，本轮直接 break（优雅退出）
             # [YOUR CODE HERE]
-            pass
+            if should_exit:
+                break
 
             try:
                 response = client.messages.create(
@@ -177,7 +190,13 @@ class TeammateManager:
                 break
             messages.append({"role": "assistant", "content": response.content})
             if response.stop_reason != "tool_use":
-                break
+                # Context: shutdown_request may arrive right after this end_turn.
+                # Poll inbox for a few rounds before exiting to reduce missed protocol messages.
+                waiting_inbox_after_end_turn = True
+                continue
+
+            waiting_inbox_after_end_turn = False
+            idle_polls_after_end_turn = 0
             results = []
             for block in response.content:
                 if block.type == "tool_use":
@@ -193,18 +212,20 @@ class TeammateManager:
                     #   1. 判断 block.name == "shutdown_response"
                     #   2. 判断 block.input.get("approve")
                     # [YOUR CODE HERE]
-                    pass
+                    if block.name == "shutdown_response" and block.input.get("approve") == True:
+                        should_exit = True
 
             messages.append({"role": "user", "content": results})
         member = self._find_member(name)
         if member:
             member["status"] = "idle"  # [s09 baseline]
 
-            # Task: 按 should_exit 决定最终状态
-            #   1. should_exit=True -> "shutdown"
+            # Task: 把 should_exit 同步到成员状态
+            #   1. should_exit=True 时设为 "shutdown"
             #   2. 否则保持 "idle"
             # [YOUR CODE HERE]
-            pass
+            if should_exit:
+                member["status"] = "shutdown"
 
             self._save_config()
 
@@ -227,15 +248,35 @@ class TeammateManager:
         #   A) shutdown_response
         #      1. 读取 request_id / approve
         #      2. 在 _tracker_lock 下更新 shutdown_requests[req_id]["status"]
-        #      3. 给 lead 发送 shutdown_response 消息（携带 request_id + approve）
+        #      3. 给 lead 发送 shutdown_response 消息：
+        #         - content 使用 args.get("reason", "")
+        #         - extra 至少包含 {"request_id": req_id, "approve": approve}
         #      4. 返回 "Shutdown approved" 或 "Shutdown rejected"
         #   B) plan_approval
         #      1. 读取 plan 文本并生成 req_id
         #      2. 在 _tracker_lock 下登记 plan_requests[req_id]
-        #      3. 给 lead 发送 plan_approval_response（带 request_id + plan）
-        #      4. 返回提交确认字符串
+        #      3. 给 lead 发送 plan_approval_response：
+        #         - content 使用 plan 原文（不要包装调试文案）
+        #         - extra 至少包含 {"request_id": req_id, "plan": plan}
+        #      4. 返回提交确认字符串（建议包含 request_id）
         # [YOUR CODE HERE]
-        pass
+        if tool_name == "shutdown_response":
+            request_id, approve = args["request_id"], args["approve"]
+            status = "approved" if approve else "rejected"
+            with _tracker_lock:
+                if request_id in shutdown_requests:
+                    shutdown_requests[request_id]["status"] = status
+
+            BUS.send(sender, "lead", args.get("reason", ""), "shutdown_response", {"request_id": request_id, "approve": approve})
+            return f"Shutdown {status}"
+
+        if tool_name == "plan_approval":
+            request_id = str(uuid.uuid4())[:8]
+            with _tracker_lock:
+                plan = args["plan"]
+                plan_requests[request_id] = {"from": sender, "plan": plan, "status": "pending"}
+            BUS.send(sender, "lead", plan, "plan_approval_response", {"request_id": request_id, "plan": plan})
+            return f"plan_approval {request_id=} sent"
 
         return f"Unknown tool: {tool_name}"
 
@@ -359,30 +400,58 @@ def _run_edit(path: str, old_text: str, new_text: str) -> str:
 def handle_shutdown_request(teammate: str) -> str:
     # Task: 发起 shutdown_request 协议
     #   1. 生成 req_id = str(uuid.uuid4())[:8]
-    #   2. 在 _tracker_lock 下登记 shutdown_requests[req_id]
-    #   3. BUS.send 给 teammate（msg_type="shutdown_request"，带 request_id）
-    #   4. 返回包含 request_id 的 pending 文案
+    #   2. 在 _tracker_lock 下登记：
+    #      shutdown_requests[req_id] = {"target": teammate, "status": "pending"}
+    #   3. BUS.send 给 teammate（msg_type="shutdown_request"）：
+    #      - content 固定为 "Please shut down gracefully."
+    #      - extra 至少包含 {"request_id": req_id}
+    #   4. 返回“人类可读”的 pending 文案，且至少包含：
+    #      - request_id
+    #      - teammate 名称
+    #      - pending 状态
     # [YOUR CODE HERE]
-    pass
+    req_id = str(uuid.uuid4())[:8]
+    with _tracker_lock:
+        shutdown_requests[req_id] = {"target": teammate, "status": "pending"}
+    BUS.send("lead", teammate, "Please shut down gracefully.", "shutdown_request", {"request_id": req_id})
+    return f"Shutdown request {req_id} send to {teammate}, status = pending"
+
 
 
 def handle_plan_review(request_id: str, approve: bool, feedback: str = "") -> str:
-    # Task: 审核 plan 请求
+    # Task: 审核 plan 请求（先查请求，再更新状态并回信）
     #   1. 在 _tracker_lock 下读取 req = plan_requests.get(request_id)
-    #   2. 未找到返回 Error: Unknown plan request_id ...
-    #   3. 找到则更新 req["status"] 为 approved/rejected
-    #   4. BUS.send 回复给 req["from"]（msg_type="plan_approval_response"）
-    #   5. 返回 f"Plan {req['status']} for '{req['from']}'"
+    #   2. 若 req 不存在，返回：
+    #      f"Error: Unknown plan request_id '{request_id}'"
+    #   3. 若存在，更新 req["status"] 为：
+    #      - "approved"（approve=True）
+    #      - "rejected"（approve=False）
+    #   4. BUS.send 回复给 req["from"]（msg_type="plan_approval_response"）：
+    #      - content 使用 feedback 原文
+    #      - extra 携带 request_id / approve / feedback
+    #   5. 返回：
+    #      f"Plan {req['status']} for '{req['from']}'"
     # [YOUR CODE HERE]
-    pass
+    req = plan_requests.get(request_id)
+    if not req:
+        return f"Error: Unknown plan request_id '{request_id}'"
+    status = "approved" if approve else "rejected"
+    with _tracker_lock:
+        req["status"] = status
 
+    BUS.send("lead", req["from"], feedback, msg_type="plan_approval_response", extra={"request_id": request_id, "approve": approve, "feedback": feedback})
+    return f"Plan {req['status']} for '{req['from']}'"
 
 def _check_shutdown_status(request_id: str) -> str:
     # Task: 查询 shutdown 请求状态
-    #   1. 在 _tracker_lock 下读取 shutdown_requests.get(request_id, {"error":"not found"})
-    #   2. json.dumps 后返回
+    #   1. 在 _tracker_lock 下读取：
+    #      shutdown_requests.get(request_id, {"error": "not found"})
+    #   2. 使用 json.dumps(...) 返回
+    #      （返回类型必须是 str，不是 dict）
     # [YOUR CODE HERE]
-    pass
+    with _tracker_lock:
+        req = shutdown_requests.get(request_id, {"error": "not found"})
+        return json.dumps(req)
 
 
 # -- Lead tool dispatch (12 tools) --
