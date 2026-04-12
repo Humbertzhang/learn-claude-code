@@ -49,6 +49,7 @@
 - **函数列表**：所有函数名、签名、定义顺序不变
 - **全局变量 vs 局部变量**：变量的作用域与参考文件保持一致
 - **模块级代码**：导入语句、常量定义、`TOOL_HANDLERS` 注册等顺序不变
+- **工具 Schema 特例**：`TOOLS` / `_teammate_tools()` 中的 tool schema（name/description/input_schema）应直接给出完整参考代码，**不要**设计为 `[YOUR CODE HERE]`
 - **唯一区别**：关键函数的核心逻辑体用 `[YOUR CODE HERE]` + 任务说明替代 `pass`
 
 > ❌ 不能：改变函数顺序、将全局变量改为局部变量、省略某些函数

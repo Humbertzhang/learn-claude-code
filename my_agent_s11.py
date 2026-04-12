@@ -282,11 +282,25 @@ class TeammateManager:
             {"name": "plan_approval", "description": "Submit a plan for lead approval.",
              "input_schema": {"type": "object", "properties": {"plan": {"type": "string"}}, "required": ["plan"]}},
         ]
-        # Task: 在工具列表末尾追加 s11 新工具
-        #   1) idle: 无参数
-        #   2) claim_task: task_id(int), required=["task_id"]
-        # [YOUR CODE HERE]
-        pass
+        teammate_tools.append(
+            {
+                "name": "idle",
+                "description": "Signal that you have no more work. Enters idle polling phase.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        )
+        teammate_tools.append(
+            {
+                "name": "claim_task",
+                "description": "Claim a task from the task board by ID.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"task_id": {"type": "integer"}},
+                    "required": ["task_id"],
+                },
+            }
+        )
+        return teammate_tools
 
     def list_all(self) -> str:
         if not self.config["members"]:
