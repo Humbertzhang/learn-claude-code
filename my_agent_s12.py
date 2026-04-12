@@ -124,13 +124,13 @@ class EventBus:
         payload = {
             "event": event,
             "ts": time.time(),
-            "task": task,
-            "worktree": worktree,
+            "task": task or {},
+            "worktree": worktree or {},
         }
         if error:
             payload["error"] = error
         with open(self.path, "a") as f:
-            f.write(json.dumps(payload))
+            f.write(json.dumps(payload) + "\n")
 
     def list_recent(self, limit: int = 20) -> str:
         # Task: 返回最近 N 条事件（JSON 字符串）
@@ -190,6 +190,7 @@ class TaskManager:
         # Task: 创建新任务并持久化
         #   1. 用 self._next_id 生成 task
         #   2. 默认字段：
+        #      description=description
         #      status="pending", owner="", worktree="", blockedBy=[]
         #      created_at/updated_at = time.time()
         #   3. _save(task) 后 self._next_id += 1
@@ -201,12 +202,14 @@ class TaskManager:
             "subject": subject,
             "status": "pending",
             "owner": "",
+            "description": description,
             "worktree": "",
             "blockedBy": [],
             "created_at": time.time(),
             "updated_at": time.time()
         }
         self._save(task)
+        self._next_id += 1
         return json.dumps(task, indent=2)
 
     def get(self, task_id: int) -> str:
@@ -229,7 +232,7 @@ class TaskManager:
                 raise ValueError(f"status {status} not in {self.VALID_STATUS}")
             task["status"] = status
 
-        if owner:
+        if owner is not None:
             task["owner"] = owner
         
         task["updated_at"] = time.time()
@@ -245,7 +248,15 @@ class TaskManager:
         #   3. 若当前 status=="pending"，推进到 "in_progress"
         #   4. 更新 updated_at，保存后返回 json.dumps(..., indent=2)
         # [YOUR CODE HERE]
-        pass
+        task = self._load(task_id)
+        task["worktree"] = worktree
+        if owner:
+            task["owner"] = owner
+        if task.get("status") == "pending":
+            task["status"] = "in_progress"
+        task["updated_at"] = time.time()
+        self._save(task)
+        return json.dumps(task, indent=2)
 
     def unbind_worktree(self, task_id: int) -> str:
         # Task: 解绑任务 worktree
@@ -253,7 +264,11 @@ class TaskManager:
         #   2. 更新 updated_at 并保存
         #   3. 返回 json.dumps(task, indent=2)
         # [YOUR CODE HERE]
-        pass
+        task = self._load(task_id)
+        task["worktree"] = ""
+        task["updated_at"] = time.time()
+        self._save(task)
+        return json.dumps(task, indent=2)
 
     def list_all(self) -> str:
         tasks = []
@@ -299,7 +314,20 @@ class WorktreeManager:
         #   2. returncode==0 返回 True，否则 False
         #   3. 任意异常返回 False
         # [YOUR CODE HERE]
-        pass
+        try:
+            r = subprocess.run(
+                    "git rev-parse --is-inside-work-tree",
+                    shell=True,
+                    cwd=self.repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            if r.returncode == 0:
+                return True
+            return False
+        except Exception:
+            return False
 
     def _run_git(self, args: list[str]) -> str:
         # Task: 统一 git 子命令执行器
@@ -308,7 +336,23 @@ class WorktreeManager:
         #   3. returncode!=0 时抛 RuntimeError，错误文案优先 stdout+stderr
         #   4. 成功返回 stdout+stderr；空输出返回 "(no output)"
         # [YOUR CODE HERE]
-        pass
+        if not self.git_available:
+            raise RuntimeError("Git not available")
+        r = subprocess.run(
+                    ["git", *args],
+                    cwd=self.repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+        output = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            raise RuntimeError(output)
+        
+        if output:
+            return output
+        return "(no output)"
+
 
     def _load_index(self) -> dict:
         return json.loads(self.index_path.read_text())
@@ -335,13 +379,60 @@ class WorktreeManager:
         #   2. task_id 非空时必须存在对应任务，否则抛 ValueError
         #   3. 先 emit("worktree.create.before")
         #   4. 执行 git worktree add -b wt/{name} <path> <base_ref>
-        #   5. 写入 index entry（status="active"）
+        #   5. 写入 index entry（status="active"），结构示例：
+        #      {
+        #        "name": name,
+        #        "path": str(path),
+        #        "branch": f"wt/{name}",
+        #        "task_id": task_id,
+        #        "status": "active",
+        #        "created_at": time.time(),
+        #      }
+        #      然后将其加入到 index 中
         #   6. 若 task_id 非空，调用 tasks.bind_worktree(task_id, name)
         #   7. emit("worktree.create.after")
         #   8. 返回 entry 的 JSON 字符串（indent=2）
         #   9. 若异常，emit("worktree.create.failed", error=...) 后继续抛出
         # [YOUR CODE HERE]
-        pass
+        self._validate_name(name)
+        wt = self._find(name)
+        if wt:
+            raise ValueError(f"worktree {name} exists")
+        
+        if task_id is not None and not self.tasks.exists(task_id):
+            raise ValueError(f"task {task_id} not exists")
+        
+        try:
+            self.events.emit("worktree.create.before", 
+                             task={"id": task_id} if task_id is not None else {}, 
+                             worktree={"name": name, "base_ref": base_ref})
+            self._run_git(["worktree", "add", "-b", f"wt/{name}", f"{self.dir /name}", f"{base_ref}"])
+
+            entry = {
+                "name": name,
+                "path": str(self.dir /name),
+                "branch": f"wt/{name}",
+                "task_id": task_id,
+                "status": "active",
+                "created_at": time.time()
+            }
+            index_list = self._load_index()
+            index_list["worktrees"].append(entry)
+            self._save_index(index_list)
+
+            if task_id is not None:
+                self.tasks.bind_worktree(task_id, name)
+            self.events.emit("worktree.create.after", 
+                             task={"id": task_id} if task_id is not None else {}, 
+                             worktree=entry)
+        except Exception as e:
+            self.events.emit("worktree.create.failed", 
+                             task={"id": task_id} if task_id is not None else {}, 
+                             worktree={"name": name, "base_ref": base_ref},
+                             error=str(e))
+            raise
+
+        return json.dumps(entry, indent=2)
 
     def list_all(self) -> str:
         idx = self._load_index()
@@ -414,7 +505,45 @@ class WorktreeManager:
         #   7. 返回 "Removed worktree '{name}'"
         #   8. 异常时 emit("worktree.remove.failed", error=...) 后继续抛出
         # [YOUR CODE HERE]
-        pass
+        try:
+            wt = self._find(name)
+            if not wt:
+                return f"Error: Unknown worktree {name}"
+            task_id = wt.get("task_id")
+
+            self.events.emit("worktree.remove.before", 
+                            task={"id": task_id} if task_id is not None else {}, 
+                            worktree=wt)
+
+            git_commands = ["worktree", "remove", wt['path']]
+            if force:
+                git_commands.append("--force")
+            self._run_git(git_commands)
+
+            if complete_task and task_id is not None:
+                self.tasks.update(task_id, status="completed")
+                self.tasks.unbind_worktree(task_id)
+                self.events.emit("task.completed", 
+                                task={"id": task_id} if task_id is not None else {}, 
+                                worktree=wt)
+            
+            index_list = self._load_index()
+            for index_entry in index_list.get("worktrees", []):
+                if index_entry.get("name") == name:
+                    index_entry["status"] = "removed"
+                    index_entry["removed_at"] = time.time()
+            self._save_index(index_list)
+
+            self.events.emit("worktree.remove.after",
+                            task={"id": task_id} if task_id is not None else {}, 
+                            worktree=wt)
+            return f"Removed worktree '{name}'"
+        except Exception as e:
+            self.events.emit("worktree.remove.failed",
+                            task={"id": task_id} if task_id is not None else {}, 
+                            worktree={"name": name},
+                            error=str(e))
+            raise
 
     def keep(self, name: str) -> str:
         # Task: 保留 worktree（不删除目录，仅更新状态）
@@ -423,7 +552,26 @@ class WorktreeManager:
         #   3. 保存 index 并 emit("worktree.keep")
         #   4. 返回 kept entry 的 JSON 字符串（indent=2）
         # [YOUR CODE HERE]
-        pass
+        wt = self._find(name)
+        if not wt:
+            return f"Error: Unknown worktree {name}"
+        task_id = wt.get("task_id")
+        
+        index_list = self._load_index()
+        kept_entry = {}
+        for index_entry in index_list.get("worktrees", []):
+            if index_entry.get("name") == name:
+                kept_entry = index_entry
+                index_entry["status"] = "kept"
+                index_entry["kept_at"] = time.time()
+        self._save_index(index_list)
+        
+        self.events.emit("worktree.keep", 
+                        task={"id": task_id} if task_id is not None else {}, 
+                        worktree=wt)
+        
+        return json.dumps(kept_entry, indent=2)
+        
 
 
 WORKTREES = WorktreeManager(REPO_ROOT, TASKS, EVENTS)

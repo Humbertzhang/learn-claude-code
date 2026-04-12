@@ -152,7 +152,34 @@ class TestRepoRootAndEventBus(unittest.TestCase):
             self.assertEqual(rows[0]["event"], "ok-1")
             self.assertEqual(rows[2]["event"], "ok-2")
             self.assertEqual(rows[1]["event"], "parse_error")
-            self.assertEqual(rows[1]["raw"], "not-json-line")
+            self.assertIn("not-json-line", rows[1]["raw"])
+
+    def test_event_bus_emit_writes_one_json_per_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_path = Path(tmpdir) / ".worktrees" / "events.jsonl"
+            bus = m.EventBus(event_path)
+            with patch.object(m.time, "time", side_effect=[2000.0, 2001.0]):
+                bus.emit("e1")
+                bus.emit("e2")
+
+            lines = event_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            first = json.loads(lines[0])
+            second = json.loads(lines[1])
+            self.assertEqual(first["event"], "e1")
+            self.assertEqual(second["event"], "e2")
+
+    def test_event_bus_emit_defaults_task_and_worktree_to_empty_dict(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_path = Path(tmpdir) / ".worktrees" / "events.jsonl"
+            bus = m.EventBus(event_path)
+            with patch.object(m.time, "time", return_value=3000.0):
+                bus.emit("event.only")
+
+            line = event_path.read_text(encoding="utf-8").splitlines()[0]
+            row = json.loads(line)
+            self.assertEqual(row.get("task"), {})
+            self.assertEqual(row.get("worktree"), {})
 
 
 class TestTaskManager(unittest.TestCase):
@@ -359,6 +386,127 @@ class TestWorktreeManager(unittest.TestCase):
             out = wm.remove("ghost-lane")
             self.assertIsInstance(out, str)
             self.assertIn("Error: Unknown worktree", out)
+
+    def test_create_emits_before_and_after_events(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            tasks = m.TaskManager(repo_root / ".tasks")
+            events = m.EventBus(repo_root / ".worktrees" / "events.jsonl")
+            write_task_file(tasks.dir, 1, subject="auth", status="pending")
+            wm = create_worktree_manager(repo_root, tasks, events, git_available=True)
+
+            with patch.object(wm, "_run_git", return_value="ok"), \
+                 patch.object(wm.events, "emit") as mock_emit:
+                wm.create("auth-refactor", task_id=1)
+
+            events_fired = [call.args[0] for call in mock_emit.call_args_list]
+            self.assertIn("worktree.create.before", events_fired)
+            self.assertIn("worktree.create.after", events_fired)
+            self.assertNotIn("worktree.create.failed", events_fired)
+
+    def test_remove_passes_worktree_path_to_git_remove(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            tasks = m.TaskManager(repo_root / ".tasks")
+            events = m.EventBus(repo_root / ".worktrees" / "events.jsonl")
+            wm = create_worktree_manager(repo_root, tasks, events, git_available=True)
+
+            index_path = repo_root / ".worktrees" / "index.json"
+            wt_path = repo_root / ".worktrees" / "auth-refactor"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "worktrees": [
+                            {
+                                "name": "auth-refactor",
+                                "path": str(wt_path),
+                                "branch": "wt/auth-refactor",
+                                "task_id": None,
+                                "status": "active",
+                            }
+                        ]
+                    },
+                    indent=2,
+                )
+            )
+
+            with patch.object(wm, "_run_git", return_value="ok") as mock_git, \
+                 patch.object(wm.events, "emit"):
+                wm.remove("auth-refactor")
+
+            mock_git.assert_called_once_with(["worktree", "remove", str(wt_path)])
+
+    def test_remove_success_emits_after_not_failed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            tasks = m.TaskManager(repo_root / ".tasks")
+            events = m.EventBus(repo_root / ".worktrees" / "events.jsonl")
+            wm = create_worktree_manager(repo_root, tasks, events, git_available=True)
+
+            index_path = repo_root / ".worktrees" / "index.json"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "worktrees": [
+                            {
+                                "name": "auth-refactor",
+                                "path": str(repo_root / ".worktrees" / "auth-refactor"),
+                                "branch": "wt/auth-refactor",
+                                "task_id": None,
+                                "status": "active",
+                            }
+                        ]
+                    },
+                    indent=2,
+                )
+            )
+
+            with patch.object(wm, "_run_git", return_value="ok"), \
+                 patch.object(wm.events, "emit") as mock_emit:
+                wm.remove("auth-refactor")
+
+            events_fired = [call.args[0] for call in mock_emit.call_args_list]
+            self.assertIn("worktree.remove.before", events_fired)
+            self.assertIn("worktree.remove.after", events_fired)
+            self.assertNotIn("worktree.remove.failed", events_fired)
+
+    def test_remove_failure_emits_failed_and_reraises(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            tasks = m.TaskManager(repo_root / ".tasks")
+            events = m.EventBus(repo_root / ".worktrees" / "events.jsonl")
+            wm = create_worktree_manager(repo_root, tasks, events, git_available=True)
+
+            index_path = repo_root / ".worktrees" / "index.json"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "worktrees": [
+                            {
+                                "name": "auth-refactor",
+                                "path": str(repo_root / ".worktrees" / "auth-refactor"),
+                                "branch": "wt/auth-refactor",
+                                "task_id": None,
+                                "status": "active",
+                            }
+                        ]
+                    },
+                    indent=2,
+                )
+            )
+
+            with patch.object(wm, "_run_git", side_effect=RuntimeError("git remove failed")), \
+                 patch.object(wm.events, "emit") as mock_emit:
+                with self.assertRaises(RuntimeError):
+                    wm.remove("auth-refactor")
+
+            events_fired = [call.args[0] for call in mock_emit.call_args_list]
+            self.assertIn("worktree.remove.before", events_fired)
+            self.assertIn("worktree.remove.failed", events_fired)
 
 
 class TestToolsAndHandlers(unittest.TestCase):

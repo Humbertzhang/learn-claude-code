@@ -198,6 +198,7 @@ cython_debug/
 .tasks/
 .team/
 .teams/
+.worktrees/
 
 # Ruff stuff:
 .ruff_cache/

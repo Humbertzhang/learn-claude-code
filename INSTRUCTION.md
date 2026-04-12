@@ -137,7 +137,8 @@ pass
 - [x] **s09 完成**：`my_agent_s09.py` 已实现并验证通过，笔记见 `notes/note09.md`
 - [x] **s10 完成**：`my_agent_s10.py` 已实现并验证通过（`python3 test_s10.py`），笔记见 `notes/note10.md`
 - [x] **s11 完成**：`my_agent_s11.py` 已实现并验证通过（`python3 test_s11.py`），笔记见 `notes/note11.md`
-- [ ] **s12 准备中**：目标学习 `worktree task isolation`，参考 `docs/zh/s12-worktree-task-isolation.md` 与 `agents/s12_worktree_task_isolation.py`
+- [x] **s12 完成**：`my_agent_s12.py` 已实现并验证通过（`python3 test_s12.py`）
+- [x] **12 节完成**：s01 ~ s12 全部跑通，可进入整体验证与回顾阶段
 
 ---
 
