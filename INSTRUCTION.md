@@ -85,6 +85,22 @@ pass
 
 这样翻看 `my_agent_sXX.py` 时，可以清楚看到每个机制是哪个 session 加入的。
 
+### 3.5 返回值与测试断言规范（重要）
+
+在改写 `my_agent_sXX.py` 与 `test_sXX.py` 时，统一遵循：
+
+1. **先区分输出类型**  
+   机器消费的返回值（状态、JSON 字段、ID、工具名）做严格检查；人类可读文案只检查关键信息，不做整句死匹配。
+
+2. **避免把学习点变成“背句子”**  
+   测试优先检验机制是否正确：状态变化、数据落盘、消息发送、副作用；文案措辞放在次级。
+
+3. **结构化数据先解析再断言**  
+   能 `json.loads` 的结果，优先断言关键字段和值，减少格式噪音导致的误判。
+
+4. **严格文案必须先在注释中约定**  
+   只有当 `my_agent_sXX.py` 的 Task 注释给出明确模板时，`test_sXX.py` 才使用 `assertEqual` 做整句检查；否则使用语义匹配（如 `assertIn`）。
+
 ---
 
 ## 四、12 个 Session 的学习路线图
@@ -113,9 +129,14 @@ pass
 - [x] **s02 完成**：`my_agent_s02.py` 已实现并验证通过
 - [x] **s03 完成**：`my_agent_s03.py` 已实现并验证通过，笔记见 `notes/note03.md`
 - [x] **s04 完成**：`my_agent_s04.py` 已实现并验证通过
-- [x] **s05 框架就绪**：`my_agent_s05.py` 框架（含 `[YOUR CODE HERE]` 占位符）已创建，待实现
-- [ ] **s05 实现**：需自行填写 `SkillLoader` 的四个方法 + `agent_loop()`，通过 `python3 test_s05.py`
-- [ ] s06 — s12 待推进
+- [x] **s05 完成**：`my_agent_s05.py` 已实现并验证通过
+- [x] **s06 完成**：`my_agent_s06.py` 已实现并验证通过
+- [x] **s07 完成**：`my_agent_s07.py` 已实现并验证通过
+- [x] **s08 完成**：`my_agent_s08.py` 已实现并验证通过
+- [x] **s09 完成**：`my_agent_s09.py` 已实现并验证通过，笔记见 `notes/note09.md`
+- [x] **s10 完成**：`my_agent_s10.py` 已实现并验证通过（`python3 test_s10.py`），笔记见 `notes/note10.md`
+- [ ] **s11 待开始**：下一步学习 `autonomous agents`
+- [ ] **s12 待开始**：worktree 任务隔离
 
 ---
 
