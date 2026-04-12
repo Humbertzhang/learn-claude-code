@@ -113,7 +113,8 @@ def scan_unclaimed_tasks() -> list:
     #      - blockedBy 为空
     #   4. 返回满足条件的 task 列表
     # [YOUR CODE HERE]
-    pass
+    TASKS_DIR.mkdir(exist_ok=True)
+    
 
 
 def claim_task(task_id: int, owner: str) -> str:
