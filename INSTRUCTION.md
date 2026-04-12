@@ -136,9 +136,8 @@ pass
 - [x] **s08 完成**：`my_agent_s08.py` 已实现并验证通过
 - [x] **s09 完成**：`my_agent_s09.py` 已实现并验证通过，笔记见 `notes/note09.md`
 - [x] **s10 完成**：`my_agent_s10.py` 已实现并验证通过（`python3 test_s10.py`），笔记见 `notes/note10.md`
-- [ ] **s11 准备中**：目标学习 `autonomous agents`，参考 `docs/zh/s11-autonomous-agents.md` 与 `agents/s11_autonomous_agents.py`
-- [ ] **s11 框架任务**：创建 `my_agent_s11.py`（仅保留 s11 新增点为 `[YOUR CODE HERE]`）+ `test_s11.py`
-- [ ] **s12 待开始**：worktree 任务隔离
+- [x] **s11 完成**：`my_agent_s11.py` 已实现并验证通过（`python3 test_s11.py`），笔记见 `notes/note11.md`
+- [ ] **s12 准备中**：目标学习 `worktree task isolation`，参考 `docs/zh/s12-worktree-task-isolation.md` 与 `agents/s12_worktree_task_isolation.py`
 
 ---
 
@@ -154,14 +153,14 @@ pass
 请按照 INSTRUCTION.md 的方式引导我：创建 my_agent_s[XX+1].py 框架并给出对应测试文件。
 ```
 
-当前可直接用于 s11 的提示：
+当前可直接用于 s12 的提示：
 
 ```
 注意需要遵守 infinity loop 规则。
 ---
 我正在学习 learn-claude-code，采用渐进叠加方式修改 my_agent.py。
-当前进度：已完成 [s10]，准备学习 [s11]。
-请按照 INSTRUCTION.md 的方式引导我：创建 my_agent_s11.py 框架并给出对应测试文件。
+当前进度：已完成 [s11]，准备学习 [s12]。
+请按照 INSTRUCTION.md 的方式引导我：创建 my_agent_s12.py 框架并给出对应测试文件。
 ```
 
 ---

@@ -103,6 +103,16 @@ BUS = MessageBus(INBOX_DIR)
 # ============================================================
 # [s11] TASK BOARD — scan/claim unclaimed tasks
 # ============================================================
+# Task JSON 参考结构（.tasks/task_{id}.json）:
+# {
+#   "id": 12,
+#   "subject": "Fix API retry bug",
+#   "description": "Handle 429 with backoff",
+#   "status": "pending",          # pending | in_progress | completed
+#   "blockedBy": [],              # 被哪些任务阻塞
+#   "blocks": [13],               # 会阻塞哪些任务
+#   "owner": ""                   # 未认领为空字符串；认领后如 "alice"
+# }
 def scan_unclaimed_tasks() -> list:
     # Task: 扫描 .tasks 看板并返回“可认领任务”列表
     #   1. 确保 TASKS_DIR 存在（mkdir(exist_ok=True)）
@@ -114,20 +124,38 @@ def scan_unclaimed_tasks() -> list:
     #   4. 返回满足条件的 task 列表
     # [YOUR CODE HERE]
     TASKS_DIR.mkdir(exist_ok=True)
+    tasks = []
+    for taskf in sorted(TASKS_DIR.glob("task_*.json")):
+        task = json.loads(taskf.read_text())
+        if task.get("status") == "pending" and not task.get("owner") and not task.get("blockedBy"):
+            tasks.append(task)
     
+    return tasks
 
 
 def claim_task(task_id: int, owner: str) -> str:
     # Task: 认领任务（带并发保护）
     #   1. 在 _claim_lock 下处理
-    #   2. 定位 TASKS_DIR/task_{task_id}.json，不存在返回 Error
+    #   2. 定位 TASKS_DIR/task_{task_id}.json，不存在返回：
+    #      f"Error: Task {task_id} not found"
     #   3. 读取 task，写入：
     #      - owner = owner
     #      - status = "in_progress"
     #   4. 写回 JSON（indent=2）
-    #   5. 返回 "Claimed task #{task_id} for {owner}"
+    #   5. 成功返回：
+    #      f"Claimed task #{task_id} for {owner}"
     # [YOUR CODE HERE]
-    pass
+    with _claim_lock:
+        task_path = TASKS_DIR/f"task_{task_id}.json"
+        if not task_path.exists():
+            return f"Error: Task {task_id} not found"
+        task = json.loads(task_path.read_text())
+        task["owner"] = owner
+        task["status"] = "in_progress"
+
+        task_path.write_text(json.dumps(task, indent=2))
+    
+    return f"Claimed task #{task_id} for {owner}"
 
 
 # ============================================================
@@ -138,7 +166,10 @@ def make_identity_block(name: str, role: str, team_name: str) -> dict:
     #   1. 返回 role="user" 的 dict
     #   2. content 采用 <identity> 包裹，包含 name/role/team_name
     # [YOUR CODE HERE]
-    pass
+    return {
+        "role": "user",
+        "content": f"<identity>You are {name}, role: {role}, belong to team:{team_name}.</identity>"
+    }
 
 
 # ============================================================
@@ -172,7 +203,10 @@ class TeammateManager:
         #   2. 找到后更新 member["status"] = status
         #   3. 调用 _save_config()
         # [YOUR CODE HERE]
-        pass
+        member = self._find_member(name)
+        if member:
+            member["status"] = status
+            self._save_config()
 
     def spawn(self, name: str, role: str, prompt: str) -> str:
         member = self._find_member(name)
@@ -205,21 +239,121 @@ class TeammateManager:
 
         # Task: 实现自治循环（WORK/IDLE 双阶段）
         #   WORK phase:
-        #     1) 循环读取 inbox，若收到 shutdown_request -> _set_status("shutdown") 并 return
-        #     2) 调用 LLM；异常则 _set_status("idle") 并 return
-        #     3) 若 stop_reason != "tool_use" 切到 IDLE phase
-        #     4) 执行 tool_use；当 block.name == "idle" 时设置 idle_requested=True
+        #     1) 循环读取 inbox，若收到 shutdown_request -> _set_status(name, "shutdown") 并 return
+        #     2) 调用 LLM；异常则 _set_status(name, "idle") 并 return
+        #     3) 若 stop_reason != "tool_use"，结束 WORK 并切到 IDLE phase
+        #     4) 执行 tool_use：
+        #        - 若 block.name == "idle"，设置 idle_requested=True（表示主动进入 IDLE）
+        #        - 否则走 _exec(...)
+        #        - 两类都写入 results
+        #     5) 写回 tool_result 后，若 idle_requested=True，立即结束 WORK 并切到 IDLE
         #   IDLE phase:
-        #     5) 先 _set_status("idle")
-        #     6) 按 POLL_INTERVAL 轮询至 IDLE_TIMEOUT：
-        #        - inbox 有消息：追加到 messages 并 resume=True
-        #        - 若含 shutdown_request：_set_status("shutdown") 并 return
-        #        - 否则扫描 unclaimed tasks，有任务则 claim + 追加 auto-claimed 提示并 resume=True
-        #        - 若 len(messages) <= 3，插入 make_identity_block + "I am {name}. Continuing."
-        #     7) 若未 resume：_set_status("shutdown") 并 return
-        #     8) 若 resume：_set_status("working")，回到下一轮 WORK
+        #     6) 先 _set_status(name, "idle")
+        #     7) 进入“空闲心跳循环”（总时长上限 IDLE_TIMEOUT）：
+        #        - 每轮先 sleep(POLL_INTERVAL)
+        #        - 先检查 inbox：
+        #          a. 收到 shutdown_request -> _set_status(name, "shutdown") 并 return
+        #          b. 收到普通消息 -> 追加到 messages，resume=True，跳出 IDLE
+        #        - inbox 为空时再检查任务看板：
+        #          a. 有可认领任务 -> claim_task(...)
+        #          b. 追加 <auto-claimed> 提示到 messages
+        #          c. 若上下文过短（len(messages) <= 3），先注入 identity 块
+        #          d. resume=True，跳出 IDLE
+        #     8) IDLE 结束后：
+        #        - 若未 resume（超时仍无消息/无任务）-> _set_status(name, "shutdown") 并 return
+        #        - 若 resume -> _set_status(name, "working")，回到下一轮 WORK
         # [YOUR CODE HERE]
-        pass
+        phase = "work"
+
+        for _ in range(50):
+            if phase == "work":
+                idle_requested = False
+                inbox = BUS.read_inbox(name)
+                
+                for msg in inbox:
+                    if msg["type"] == "shutdown_request":
+                        self._set_status(name, "shutdown")
+                        return
+                    messages.append({"role": "user", "content": json.dumps(msg)})
+                
+                try:
+                    response = client.messages.create(
+                        model=MODEL,
+                        system=sys_prompt,
+                        messages=messages,
+                        tools=tools,
+                        max_tokens=8000,
+                    )
+                except Exception:
+                    self._set_status(name, "idle")
+                    return
+
+                messages.append({"role": "assistant", "content": response.content})
+
+                if response.stop_reason != "tool_use":
+                    phase = "idle"
+                    continue
+                
+                results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        if block.name == "idle":
+                            idle_requested=True
+                        else:
+                            output = self._exec(name, block.name, block.input)
+                            print(f"  [{name}] {block.name}: {str(output)[:120]}")
+                            results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": str(output),
+                            })
+                messages.append({"role": "user", "content": results})
+                if idle_requested:
+                    phase = "idle"
+                    continue
+            elif phase == "idle":
+                self._set_status(name, "idle")
+                resume = False
+                
+                timecount = 0
+                while timecount < IDLE_TIMEOUT:
+                    time.sleep(POLL_INTERVAL)
+                    timecount += POLL_INTERVAL
+                    
+                    inbox = BUS.read_inbox(name)
+                    if inbox:
+                        for msg in inbox:
+                            if msg["type"] == "shutdown_request":
+                                self._set_status(name, "shutdown")
+                                return
+                            else:
+                                messages.append({"role": "user", "content": json.dumps(msg)})
+                                resume=True
+                                break
+                        if resume:
+                            break
+                    else:
+                        # 检查任务看板
+                        unclaimed_tasks = scan_unclaimed_tasks()
+                        if unclaimed_tasks:
+                            claim_task(unclaimed_tasks[0]["id"], name)
+
+                            if len(messages) <= 3:
+                                messages.insert(0, make_identity_block(name, role, team_name))
+                                messages.insert(1, {"role": "assistant", "content": f"I am {name}. Continuing."})
+                            messages.append({"role": "user", "content": f"<auto-claimed>Auto claimed task {unclaimed_tasks[0]["id"]} subject: {unclaimed_tasks[0]["subject"]} description:{unclaimed_tasks[0]["description"]} </auto-claimed>"})
+                        
+                            resume = True
+                            break
+                        
+                if not resume:
+                    self._set_status(name, "shutdown")
+                    return
+                else:
+                    self._set_status(name, "working")
+                    phase = "work"
+            else:
+                raise Exception(f"No valid phase: {phase}")
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
         # these base tools are unchanged from s02
@@ -260,7 +394,8 @@ class TeammateManager:
             #   1. 调用 claim_task(args["task_id"], sender)
             #   2. 返回其结果字符串
             # [YOUR CODE HERE]
-            pass
+            claim_result = claim_task(args["task_id"], sender)
+            return claim_result
         return f"Unknown tool: {tool_name}"
 
     def _teammate_tools(self) -> list:
